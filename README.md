@@ -1,50 +1,79 @@
 # Auto-Connect INET - Free WiFi
 
-Công cụ tự động hóa quá trình đăng nhập và duy trì kết nối mạng WiFi **INET - Free WiFi** (hệ thống cổng chào captive portal của **AWING**) trên Windows 10/11 mà không cần mở trình duyệt hay chờ đợi 5 giây quảng cáo.
+Công cụ tự động đăng nhập và duy trì kết nối WiFi **INET - Free WiFi** (captive portal AWING) trên Windows 10/11 — không cần mở trình duyệt, re-auth trong **~1-2 giây**.
 
-## ✨ Tính năng nổi bật
+## ✨ Tính năng
 
-- **Tự động đăng nhập:** Tự động mô phỏng luồng đăng nhập (Bypass Captive Portal) ngay khi phát hiện card mạng kết nối vào SSID mục tiêu.
-- **Không hiện cửa sổ CMD (Tàng hình):** Tiến trình hoạt động ẩn hoàn toàn dưới nền hệ thống thông qua `pythonw.exe` (chỉ tiêu thụ ~10MB RAM).
-- **Nhận diện đa card mạng (Universal Guard):** Tự động nhận diện mọi giao diện mạng không dây (WiFi onboard, USB Realtek WiFi...) kết nối vào mạng INET để quản lý và bảo vệ song song.
-- **Cơ chế chống spam (Exponential Backoff):** Tự động kéo giãn thời gian quét khi mạng bị lỗi hoặc router quá tải (10s -> 20s -> 40s ... tối đa 5 phút) để tránh lãng phí tài nguyên và tránh bị Gateway block IP.
-- **Trải nghiệm liền mạch (Seamless):** Tự động quét kiểm tra mỗi 10 giây. Khi phiên 15 phút hết hạn, script lập tức đăng nhập lại giúp duy trì internet liên tục.
-- **Watchdog Tự hồi sinh:** Sử dụng Windows Scheduled Task làm watchdog, tự khởi chạy lại script khi máy sleep/wake up hoặc bị tắt.
-- **Cài đặt 1-Click:** Chỉ cần chạy file `.bat` để thiết lập trọn gói trên bất kỳ máy tính Windows nào.
+- **Keepalive 1s:** Thread riêng ping detectportal.firefox.com mỗi 1 giây → phát hiện mất mạng trong ~0.5s
+- **Cached credentials:** Lưu username/password ra file `.creds_cache.json` → re-auth không cần gọi cloud API (~0.3s)
+- **Tự động mỗi khi bật máy:** Registry HKCU\Run — không cần admin, không Scheduled Task
+- **Chạy ẩn hoàn toàn:** file `.exe` dạng `--noconsole`, RAM ~7MB
+- **Exponential backoff:** Nếu auth fail, retry 10s → 20s → 40s → ... → 5 phút
 
-## 📂 Cấu trúc thư mục Project
+## 📂 Cấu trúc
 
-```text
-├── auto_connect_inet.py  # Script chính (giám sát, xử lý đăng nhập captive portal)
-├── test_download.py      # Script phụ để test độ ổn định băng thông (tải file thử nghiệm)
-├── install.bat           # File cài đặt 1-click tự động đăng ký với Windows Task Scheduler
-└── auto_connect_inet.exe # File thực thi đã biên dịch chạy ẩn (onefile, noconsole)
+```
+├── auto_connect_inet.py    # Source Python v2 (keepalive + cached creds)
+├── auto_connect_inet.exe   # Compiled binary (chạy ngầm)
+├── install_v2.bat          # Cài đặt: Registry startup + launch
+├── test_download.py        # Test băng thông
+├── README.md
+└── .gitignore
 ```
 
-## 🚀 Hướng dẫn cài đặt (1-Click)
+## 🚀 Cài đặt
 
-1. Tải toàn bộ thư mục này về máy.
-2. Nhấp đúp chuột vào file `install.bat`.
-3. Quá trình cài đặt sẽ tự động sao chép file thực thi vào thư mục hệ thống `%LOCALAPPDATA%\AutoConnectINET` và đăng ký lịch chạy ngầm vĩnh viễn với Windows.
+### Nhanh: Chạy `install_v2.bat` (nhấp đúp)
+→ Tự đăng ký Registry + launch ngay.
 
-## 🛠️ Hướng dẫn gỡ cài đặt (Uninstall)
-
-Nếu bạn không muốn sử dụng công cụ tự động đăng nhập nữa, hãy mở CMD với quyền Administrator hoặc Terminal thường và chạy lần lượt các lệnh sau:
+### Thủ công (nếu muốn):
 
 ```cmd
-:: Tắt tiến trình chạy ngầm hiện tại
-taskkill /F /FI "CommandLine eq *auto_connect_inet.exe*"
+:: Thêm vào startup
+reg add HKCU\Software\Microsoft\Windows\CurrentVersion\Run ^
+  /v AutoConnectINET /t REG_SZ /d "D:\auto-connect-inet\auto_connect_inet.exe" /f
 
-:: Xóa lịch khởi chạy tự động của Windows
-schtasks /delete /tn AutoConnectINET /f
-
-:: Xóa thư mục cài đặt
-rd /s /q "%LOCALAPPDATA%\AutoConnectINET"
+:: Chạy ngay
+start /B "" "D:\auto-connect-inet\auto_connect_inet.exe"
 ```
 
-## 📝 Cơ chế kỹ thuật (Technical Overview)
+## 🗑️ Gỡ cài đặt
 
-1. **Phát hiện mạng:** Sử dụng `netsh wlan show interfaces` để lọc các adapter đang kết nối với SSID `INET - Free WiFi`.
-2. **Cô lập socket:** Khởi tạo Socket TCP thủ công và gọi hàm `s.bind((interface_ip, 0))` để ép dữ liệu đi qua chính xác card mạng đích, tránh xung đột định tuyến khi máy dùng nhiều mạng song song.
-3. **Phát hiện cổng chào:** Gửi yêu cầu HTTP GET đến `http://detectportal.firefox.com/success.txt`. Nếu trả về chuỗi `success` thì bỏ qua, ngược lại (bị chuyển hướng) sẽ kích hoạt đăng nhập.
-4. **Vượt rào cản:** Lấy mã thử thách `chap-challenge` từ gateway nội bộ (`192.168.200.1`), gửi xác thực lên server cloud của nhà mạng (`v1.awingconnect.vn`) thông qua kết nối internet chính đang hoạt động để lấy tài khoản đăng nhập một lần, sau đó POST ngược lại để gateway nội bộ mở băng thông cho địa chỉ MAC của card.
+```cmd
+reg delete HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v AutoConnectINET /f
+taskkill /f /im auto_connect_inet.exe
+rd /s /q D:\auto-connect-inet
+```
+
+## 🔬 Cơ chế kỹ thuật
+
+### V2 — Keepalive + Cached Credentials
+
+```
+keepalive thread (1s)           main loop
+      │                            │
+      ├─ ping detectportal ───────┤ (chờ event)
+      │                            │
+      ├─ [MẤT MẠNG!] ──────► event!
+      │                            ├─ cached creds? → POST gateway (~0.3s) ✅
+      │                            ├─ không?         → cloud API (~1-3s)
+      │                            └─ online lại
+```
+
+1. **Cached credentials:** Sau lần login cloud đầu tiên, lưu username/password vào `.creds_cache.json`. Lần bị block kế tiếp POST thẳng vào gateway local — không cần chạm cloud.
+
+2. **Background keepalive:** Thread riêng ping detectportal.firefox.com mỗi 1s (timeout 0.5s). Dùng `threading.Event` để đánh thức main loop ngay khi phát hiện mất mạng.
+
+3. **Cloud API fallback:** Nếu cached creds hết hạn, gọi `v1.awingconnect.vn/Home/VerifyUrl` timeout 3s, parse form, lấy creds mới, cache lại.
+
+### So sánh thời gian re-auth (mất mạng → có mạng lại)
+
+```
+Gốc (v0)   ████████████████████████████████████████  20-30s
+V1         ██████████████                             5-10s
+V2 này     ███                                        ~1-2s 🏁
+```
+
+## 📦 Links
+
+- GitHub: https://github.com/pckienuit/auto-connect-inet
