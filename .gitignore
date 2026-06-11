@@ -1,0 +1,9 @@
+# Build artifacts
+*.spec
+dist/
+build/
+__pycache__/
+*.pyc
+
+# Credentials cache
+.creds_cache.json

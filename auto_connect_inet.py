@@ -7,15 +7,47 @@ import json
 import urllib.request
 import urllib.parse
 import subprocess
+import threading
+import atexit
 
 SSID_NAME = "INET - Free WiFi"
 LOCK_PORT = 49999
-BASE_CHECK_INTERVAL = 10  # Check every 10 seconds for online interfaces
-BACKOFF_MAX = 300  # Max backoff of 5 minutes
+BACKOFF_MAX = 300
 
-# Keep track of interface states to prevent spam
-# structure: { interface_name: { "failures": 0, "next_check": 0, "is_online": False } }
+# Credential cache
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+CACHE_FILE = os.path.join(SCRIPT_DIR, ".creds_cache.json")
+
+# Keepalive settings
+KEEPALIVE_INTERVAL = 1.0    # Background ping every 1s
+KEEPALIVE_TIMEOUT = 0.5     # 500ms per ping
+
 interface_states = {}
+creds_cache = {}
+cache_lock = threading.Lock()
+block_event = threading.Event()
+
+
+def load_cache():
+    global creds_cache
+    try:
+        with open(CACHE_FILE, 'r') as f:
+            creds_cache = json.load(f)
+            print(f"[*] Loaded cached credentials for gateway")
+            return True
+    except:
+        creds_cache = {}
+        return False
+
+
+def save_cache(data):
+    try:
+        with open(CACHE_FILE, 'w') as f:
+            json.dump(data, f)
+        return True
+    except:
+        return False
+
 
 def get_interface_details(interface_name):
     try:
@@ -48,6 +80,7 @@ def get_interface_details(interface_name):
         print(f"[-] Error running ipconfig for {interface_name}: {e}")
         return None, None
 
+
 def get_connected_inet_interfaces(target_ssid=SSID_NAME):
     try:
         res = subprocess.run("netsh wlan show interfaces", shell=True, capture_output=True, text=True)
@@ -69,10 +102,11 @@ def get_connected_inet_interfaces(target_ssid=SSID_NAME):
         print(f"[-] Error listing connected interfaces: {e}")
         return []
 
+
 def query_local_gateway(bind_ip, gateway_ip):
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.bind((bind_ip, 0))
-    s.settimeout(5)
+    s.settimeout(3)
     try:
         s.connect((gateway_ip, 80))
         req = (
@@ -90,14 +124,14 @@ def query_local_gateway(bind_ip, gateway_ip):
             res += chunk
         s.close()
         return res.decode('utf-8', errors='ignore')
-    except Exception as e:
-        # Silently return empty string on error to avoid console spam
+    except Exception:
         return ""
+
 
 def post_local_gateway(bind_ip, gateway_ip, post_data):
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.bind((bind_ip, 0))
-    s.settimeout(5)
+    s.settimeout(3)
     try:
         s.connect((gateway_ip, 80))
         req_body = (
@@ -118,14 +152,15 @@ def post_local_gateway(bind_ip, gateway_ip, post_data):
             res += chunk
         s.close()
         return res.decode('utf-8', errors='ignore')
-    except Exception as e:
+    except Exception:
         return ""
+
 
 def check_internet(bind_ip):
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.bind((bind_ip, 0))
-        s.settimeout(3)
+        s.settimeout(KEEPALIVE_TIMEOUT)
         s.connect(('detectportal.firefox.com', 80))
         req = (
             "GET /success.txt HTTP/1.1\r\n"
@@ -148,10 +183,25 @@ def check_internet(bind_ip):
     except Exception:
         return False
 
-def do_login(ip, gw):
+
+def do_login_cached(ip, gw, cached):
+    """Try cached credentials directly (no cloud API). Returns True if works."""
+    post_params = {
+        'username': cached['username'],
+        'password': cached['password'],
+        'dst': cached['dst'],
+        'popup': cached['popup']
+    }
+    post_data = urllib.parse.urlencode(post_params)
+    post_local_gateway(ip, gw, post_data)
+    return check_internet(ip)
+
+
+def do_login_cloud(ip, gw):
+    """Login via cloud API, cache successful creds. Returns (success, creds_or_None)."""
     html = query_local_gateway(ip, gw)
     if not html:
-        return False
+        return False, None
     
     try:
         serial_m = re.search(r'id="serial"\s+value="([^"]*)"', html)
@@ -163,7 +213,7 @@ def do_login(ip, gw):
         chap_challenge_m = re.search(r'id="chap-challenge"\s+value="([^"]*)"', html)
 
         if not all([serial_m, client_mac_m, client_ip_m, userurl_m, login_url_m, chap_id_m, chap_challenge_m]):
-            return False
+            return False, None
 
         serial = serial_m.group(1)
         client_mac = client_mac_m.group(1)
@@ -173,7 +223,7 @@ def do_login(ip, gw):
         chap_id = chap_id_m.group(1)
         chap_challenge = chap_challenge_m.group(1)
     except Exception:
-        return False
+        return False, None
 
     params = {
         'serial': serial,
@@ -198,14 +248,14 @@ def do_login(ip, gw):
     )
 
     try:
-        with urllib.request.urlopen(req, timeout=10) as response:
+        with urllib.request.urlopen(req, timeout=3) as response:
             res_data = json.loads(response.read().decode('utf-8'))
     except Exception:
-        return False
+        return False, None
 
     form_html = res_data.get('captiveContext', {}).get('contentAuthenForm', '')
     if not form_html:
-        return False
+        return False, None
 
     try:
         username = re.search(r'name="username"\s+value="([^"]*)"', form_html).group(1)
@@ -213,43 +263,75 @@ def do_login(ip, gw):
         dst = re.search(r'name="dst"\s+value="([^"]*)"', form_html).group(1)
         popup = re.search(r'name="popup"\s+value="([^"]*)"', form_html).group(1)
     except Exception:
-        return False
+        return False, None
 
-    post_params = {
-        'username': username,
-        'password': password,
-        'dst': dst,
-        'popup': popup
-    }
-    post_data = urllib.parse.urlencode(post_params)
+    creds = {'username': username, 'password': password, 'dst': dst, 'popup': popup}
     
+    post_params = dict(creds)
+    post_data = urllib.parse.urlencode(post_params)
     post_local_gateway(ip, gw, post_data)
     
-    return check_internet(ip)
+    success = check_internet(ip)
+    return success, creds if success else None
+
+
+def keepalive_worker(stop_event):
+    """Background thread: pings detectportal every 1s. Sets block_event on failure."""
+    while not stop_event.is_set():
+        try:
+            inet_interfaces = get_connected_inet_interfaces()
+            for iface in inet_interfaces:
+                ip, gw = get_interface_details(iface)
+                if ip and gw:
+                    online = check_internet(ip)
+                    if not online:
+                        block_event.set()
+                        break
+        except Exception:
+            pass
+        stop_event.wait(KEEPALIVE_INTERVAL)
+
 
 def main():
+    # Single instance lock
     try:
         lock_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         lock_socket.bind(('127.0.0.1', LOCK_PORT))
         lock_socket.listen(1)
     except socket.error:
-        print("[*] Another instance of auto_connect_inet.py is already running. Exiting.")
+        print("[*] Another instance is already running. Exiting.")
         sys.exit(0)
 
-    print(f"[*] Robust Dynamic Daemon started. Monitoring SSID '{SSID_NAME}'...")
+    # Load cached credentials from disk
+    load_cache()
+    creds_status = f"Loaded cached creds" if creds_cache else "No cached creds (first run)"
+
+    # Start keepalive daemon thread
+    stop_event = threading.Event()
+    keepalive_thread = threading.Thread(target=keepalive_worker, args=(stop_event,), daemon=True)
+    keepalive_thread.start()
+    atexit.register(lambda: stop_event.set())
+    
+    print(f"[*] INET Auto-Connect v2 — Monitoring '{SSID_NAME}'")
+    print(f"[*] Keepalive: every 1s | Cache: {creds_status}")
+    print(f"[*] Re-auth target: ~1s")
 
     while True:
         try:
+            # Block here until keepalive detects an outage (or timeout for periodic refresh)
+            was_blocked = block_event.wait(timeout=2)
+            if was_blocked:
+                block_event.clear()
+            
             current_time = time.time()
             inet_interfaces = get_connected_inet_interfaces()
-            
-            # Clean up states for disconnected interfaces
+
+            # Clean up stale interfaces
             for iface in list(interface_states.keys()):
                 if iface not in inet_interfaces:
                     del interface_states[iface]
 
             for iface in inet_interfaces:
-                # Initialize state if not exists
                 if iface not in interface_states:
                     interface_states[iface] = {
                         "failures": 0,
@@ -258,9 +340,8 @@ def main():
                     }
 
                 state = interface_states[iface]
-                
-                # Check if it's time to check this interface
-                if current_time >= state["next_check"]:
+
+                if was_blocked or current_time >= state["next_check"]:
                     ip, gw = get_interface_details(iface)
                     if ip and gw:
                         online = check_internet(ip)
@@ -269,32 +350,49 @@ def main():
                                 print(f"[+] Interface '{iface}' (IP: {ip}) is ONLINE.")
                             state["is_online"] = True
                             state["failures"] = 0
-                            # Check again in 30 seconds if online
-                            state["next_check"] = current_time + 30
+                            state["next_check"] = current_time + 10
                         else:
                             state["is_online"] = False
-                            print(f"[*] Interface '{iface}' (IP: {ip}) is blocked. Authenticating...")
-                            
-                            success = do_login(ip, gw)
+                            print(f"[*] Interface '{iface}' blocked. Authenticating...")
+
+                            success = False
+
+                            # Path 1: cached creds (~300ms, no cloud API)
+                            if creds_cache:
+                                success = do_login_cached(ip, gw, creds_cache)
+                                if success:
+                                    print(f"[+] Authenticated via cached credentials!")
+
+                            # Path 2: fallback to cloud API (~1-3s)
+                            if not success:
+                                print(f"[*] Fetching fresh credentials from cloud API...")
+                                success, new_creds = do_login_cloud(ip, gw)
+                                if success:
+                                    print(f"[+] Authenticated via cloud API (cached for next time).")
+                                    save_cache(new_creds)
+                                    with cache_lock:
+                                        creds_cache.clear()
+                                        creds_cache.update(new_creds)
+                                else:
+                                    print(f"[-] Cloud API authentication failed.")
+
                             if success:
-                                print(f"[+] Interface '{iface}' successfully authenticated.")
                                 state["failures"] = 0
                                 state["is_online"] = True
-                                state["next_check"] = current_time + 30
+                                state["next_check"] = current_time + 10
                             else:
                                 state["failures"] += 1
-                                # Exponential backoff for failures: 10s, 20s, 40s, 80s, 160s, up to 300s
                                 backoff = min(10 * (2 ** (state["failures"] - 1)), BACKOFF_MAX)
-                                print(f"[-] Authentication failed for '{iface}'. Retrying in {backoff} seconds...")
+                                print(f"[-] Retrying in {backoff}s...")
                                 state["next_check"] = current_time + backoff
                     else:
-                        # No IP/Gateway, check again in 5 seconds
                         state["next_check"] = current_time + 5
-                        
+
         except Exception as e:
             print(f"[-] Error in daemon loop: {e}")
-            
-        time.sleep(1)
+
+        time.sleep(0.5)
+
 
 if __name__ == "__main__":
     main()
