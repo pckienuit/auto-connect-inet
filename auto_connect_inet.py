@@ -12,6 +12,7 @@ import atexit
 
 SSID_NAME = "INET - Free WiFi"
 LOCK_PORT = 49999
+PROACTIVE_REFRESH_INTERVAL = 840  # 14 minutes in seconds
 
 # Directory paths
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -26,6 +27,7 @@ interface_states = {}
 creds_cache = {}
 cache_lock = threading.Lock()
 block_event = threading.Event()
+force_reauth = False
 
 
 def log_message(msg):
@@ -194,6 +196,30 @@ def post_local_gateway(bind_ip, gateway_ip, post_data):
         return ""
 
 
+def logout_local_gateway(bind_ip, gateway_ip):
+    """Actively logs out from the local gateway to clear the session before proactive re-auth."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind((bind_ip, 0))
+    s.settimeout(2)
+    try:
+        s.connect((gateway_ip, 80))
+        req = (
+            "GET /logout HTTP/1.1\r\n"
+            f"Host: {gateway_ip}\r\n"
+            "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\n"
+            "Connection: close\r\n\r\n"
+        )
+        s.sendall(req.encode('utf-8'))
+        # Read the first chunk to ensure the request is processed
+        s.recv(1024)
+        s.close()
+        log_message("[*] Successfully sent /logout to local gateway.")
+        return True
+    except Exception as e:
+        log_message(f"[-] Error logging out from gateway: {e}")
+        return False
+
+
 def check_gateway_authenticated(ip, gw):
     """Local check: verify if the gateway has authenticated the MAC/IP without using WAN routing."""
     try:
@@ -218,10 +244,8 @@ def check_gateway_authenticated(ip, gw):
         res_text = res.decode('utf-8', errors='ignore')
         
         # Precise check of the gateway response:
-        # If we are online, the MikroTik status page redirects to the authorized landing page (inetcenter.vn)
         if "inetcenter.vn" in res_text.lower():
             return True
-        # If we are offline/blocked, /status redirects or refreshes to /login, or contains the login inputs
         if "login" in res_text.lower() or 'id="serial"' in res_text or 'name="username"' in res_text:
             return False
             
@@ -236,8 +260,6 @@ def check_gateway_authenticated(ip, gw):
 
 def is_interface_online(ip, gw):
     """Robust check that handles Windows multi-NIC routing and VPN/Tailscale interception issues."""
-    # We must use local gateway verification first. This is completely immune to Tailscale/VPN routing
-    # interception and Metric priority.
     return check_gateway_authenticated(ip, gw)
 
 
@@ -365,7 +387,25 @@ def keepalive_worker(stop_event):
         stop_event.wait(KEEPALIVE_INTERVAL)
 
 
+def trigger_listener(lock_socket):
+    """Listens for manual refresh commands from secondary execution instances."""
+    global force_reauth
+    while True:
+        try:
+            conn, addr = lock_socket.accept()
+            data = conn.recv(1024).decode('utf-8', errors='ignore').strip()
+            if data == "refresh":
+                log_message("[*] Manual refresh command received via local socket. Activating re-auth sequence...")
+                force_reauth = True
+                block_event.set()  # Wake up main loop immediately
+            conn.close()
+        except Exception:
+            time.sleep(0.5)
+
+
 def main():
+    global force_reauth
+
     # Set high process priority if possible
     try:
         import psutil
@@ -374,13 +414,24 @@ def main():
     except:
         pass
 
-    # Single instance lock
+    # Single instance lock & trigger check
     try:
         lock_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         lock_socket.bind(('127.0.0.1', LOCK_PORT))
-        lock_socket.listen(1)
+        lock_socket.listen(5)
     except socket.error:
-        log_message("[*] Another instance is already running. Exiting.")
+        # If another instance is running, check if the user wanted to trigger a refresh
+        if len(sys.argv) > 1 and sys.argv[1] == "--refresh":
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.connect(('127.0.0.1', LOCK_PORT))
+                s.sendall(b"refresh\n")
+                s.close()
+                print("[+] Successfully sent manual refresh command to the running daemon.")
+            except Exception as e:
+                print("[-] Failed to contact running daemon:", e)
+        else:
+            print("[*] Another instance is already running. Run with '--refresh' to trigger proactive re-auth.")
         sys.exit(0)
 
     # Load cached credentials from disk
@@ -391,15 +442,20 @@ def main():
     stop_event = threading.Event()
     keepalive_thread = threading.Thread(target=keepalive_worker, args=(stop_event,), daemon=True)
     keepalive_thread.start()
+    
+    # Start manual refresh trigger listener thread
+    listener_thread = threading.Thread(target=trigger_listener, args=(lock_socket,), daemon=True)
+    listener_thread.start()
+    
     atexit.register(lambda: stop_event.set())
     
-    log_message(f"[*] INET Auto-Connect v3.2 (Precise Mode) — Monitoring '{SSID_NAME}'")
+    log_message(f"[*] INET Auto-Connect v3.3 (Gaming & Proactive Mode) — Monitoring '{SSID_NAME}'")
     log_message(f"[*] Keepalive: every 0.5s | Cache: {creds_status}")
     log_message(f"[*] Re-auth target: ~300ms | Log file: {LOG_FILE}")
 
     while True:
         try:
-            # Block here until keepalive detects an outage
+            # Block here until keepalive detects an outage or a refresh is forced
             was_blocked = block_event.wait(timeout=1.5)
             if was_blocked:
                 block_event.clear()
@@ -417,15 +473,30 @@ def main():
                     interface_states[iface] = {
                         "failures": 0,
                         "next_check": 0,
-                        "is_online": False
+                        "is_online": False,
+                        "last_auth_time": current_time
                     }
 
                 state = interface_states[iface]
+                
+                # Proactive refresh trigger: check if 14 minutes have elapsed since last successful auth
+                if current_time - state.get("last_auth_time", 0) >= PROACTIVE_REFRESH_INTERVAL:
+                    log_message(f"[*] {PROACTIVE_REFRESH_INTERVAL // 60} minutes elapsed. Proactively refreshing session for '{iface}'...")
+                    force_reauth = True
 
-                if was_blocked or current_time >= state["next_check"]:
+                if was_blocked or force_reauth or current_time >= state["next_check"]:
                     ip, gw = get_interface_details(iface)
                     if ip and gw:
                         online = is_interface_online(ip, gw)
+                        
+                        # Active Refresh flow: Terminate session first to get new inputs
+                        if force_reauth:
+                            log_message(f"[*] Terminating session on '{iface}' for active refresh...")
+                            logout_local_gateway(ip, gw)
+                            time.sleep(0.5)  # Let gateway process the log out
+                            online = False   # Force re-authentication
+                            force_reauth = False
+                        
                         if online:
                             if not state["is_online"]:
                                 log_message(f"[+] Interface '{iface}' (IP: {ip}) is ONLINE.")
@@ -460,6 +531,7 @@ def main():
                             if success:
                                 state["failures"] = 0
                                 state["is_online"] = True
+                                state["last_auth_time"] = time.time()  # Reset proactive refresh timer
                                 state["next_check"] = current_time + 5
                             else:
                                 state["failures"] += 1
