@@ -4,16 +4,19 @@ Công cụ tự động đăng nhập và duy trì kết nối WiFi **INET - Fre
 
 ## ✨ Tính năng
 
-- **Keepalive 1s:** Thread riêng ping detectportal.firefox.com mỗi 1 giây → phát hiện mất mạng trong ~0.5s
-- **Cached credentials:** Lưu username/password ra file `.creds_cache.json` → re-auth không cần gọi cloud API (~0.3s)
-- **Tự động mỗi khi bật máy:** Registry HKCU\Run — không cần admin, không Scheduled Task
-- **Chạy ẩn hoàn toàn:** file `.exe` dạng `--noconsole`, RAM ~7MB
-- **Exponential backoff:** Nếu auth fail, retry 10s → 20s → 40s → ... → 5 phút
+- **Auto-connect disconnected adapter:** Tự động phát hiện và kết nối lại các card mạng phụ (như USB WiFi) vào SSID `"INET - Free WiFi"` nếu bị ngắt kết nối hoặc lệch SSID.
+- **Local Gate-check (Multi-NIC Bypass):** Giải quyết triệt để lỗi xung đột định tuyến (Routing Metric) trên Windows khi cắm song song card mạng chính (Pikachu) và card phụ (INET). Thay vì ping WAN (`detectportal`), script sẽ tự động kiểm tra trạng thái xác thực cục bộ qua cổng chào (`/status` và `/login`) của router.
+- **Keepalive 1s:** Thread riêng ping/check trạng thái cổng chào mỗi 1 giây → phát hiện mất mạng cực nhanh.
+- **Cached credentials:** Lưu username/password ra file `.creds_cache.json` → re-auth trực tiếp vào gateway cục bộ (~0.3s) không cần gọi cloud API.
+- **Hỗ trợ ghi Log:** Xuất nhật ký hoạt động trực tiếp ra file `auto_connect_inet.log` để dễ dàng kiểm tra/debug khi chạy ngầm.
+- **Tự động chạy khi bật máy:** Registry HKCU\Run — không cần admin, không dùng Scheduled Task.
+- **Chạy ẩn hoàn toàn:** file `.exe` dạng `--noconsole`, RAM ~7MB.
+- **Exponential backoff:** Nếu auth thực sự lỗi (do nhà mạng), tăng dần thời gian retry lên để tránh spam gateway.
 
 ## 📂 Cấu trúc
 
 ```
-├── auto_connect_inet.py    # Source Python v2 (keepalive + cached creds)
+├── auto_connect_inet.py    # Source Python v3 (auto-reconnect + local gateway checks)
 ├── auto_connect_inet.exe   # Compiled binary (chạy ngầm)
 ├── install_v2.bat          # Cài đặt: Registry startup + launch
 ├── test_download.py        # Test băng thông

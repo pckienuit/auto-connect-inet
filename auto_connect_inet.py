@@ -14,9 +14,10 @@ SSID_NAME = "INET - Free WiFi"
 LOCK_PORT = 49999
 BACKOFF_MAX = 300
 
-# Credential cache
+# Directory paths
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CACHE_FILE = os.path.join(SCRIPT_DIR, ".creds_cache.json")
+LOG_FILE = os.path.join(SCRIPT_DIR, "auto_connect_inet.log")
 
 # Keepalive settings
 KEEPALIVE_INTERVAL = 1.0    # Background ping every 1s
@@ -28,12 +29,23 @@ cache_lock = threading.Lock()
 block_event = threading.Event()
 
 
+def log_message(msg):
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    formatted_msg = f"[{timestamp}] {msg}"
+    print(formatted_msg, flush=True)
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(formatted_msg + "\n")
+    except:
+        pass
+
+
 def load_cache():
     global creds_cache
     try:
         with open(CACHE_FILE, 'r') as f:
             creds_cache = json.load(f)
-            print(f"[*] Loaded cached credentials for gateway")
+            log_message(f"[*] Loaded cached credentials for gateway")
             return True
     except:
         creds_cache = {}
@@ -77,7 +89,7 @@ def get_interface_details(interface_name):
                         gw = m.group(1)
         return ip, gw
     except Exception as e:
-        print(f"[-] Error running ipconfig for {interface_name}: {e}")
+        log_message(f"[-] Error running ipconfig for {interface_name}: {e}")
         return None, None
 
 
@@ -99,8 +111,34 @@ def get_connected_inet_interfaces(target_ssid=SSID_NAME):
                 connected_interfaces.append(name)
         return connected_interfaces
     except Exception as e:
-        print(f"[-] Error listing connected interfaces: {e}")
+        log_message(f"[-] Error listing connected interfaces: {e}")
         return []
+
+
+def ensure_secondary_connections():
+    """Detects any secondary wireless interfaces that are disconnected or on wrong SSID and connects them."""
+    try:
+        res = subprocess.run("netsh wlan show interfaces", shell=True, capture_output=True, text=True)
+        parts = res.stdout.split("Name                   :")
+        for part in parts[1:]:
+            lines = part.splitlines()
+            name = lines[0].strip()
+            
+            # Ignore primary interface
+            if name.lower() == "wifi":
+                continue
+                
+            state_match = re.search(r"State\s+:\s+(\w+)", part)
+            ssid_match = re.search(r"SSID\s+:\s+(.+)", part)
+            
+            state = state_match.group(1) if state_match else ""
+            current_ssid = ssid_match.group(1).strip() if ssid_match else ""
+            
+            if state != "connected" or current_ssid != SSID_NAME:
+                log_message(f"[*] Interface '{name}' is disconnected or wrong SSID ({current_ssid}). Reconnecting to '{SSID_NAME}'...")
+                subprocess.run(f'netsh wlan connect name="{SSID_NAME}" interface="{name}"', shell=True, capture_output=True)
+    except Exception as e:
+        log_message(f"[-] Error in ensure_secondary_connections: {e}")
 
 
 def query_local_gateway(bind_ip, gateway_ip):
@@ -184,6 +222,93 @@ def check_internet(bind_ip):
         return False
 
 
+def check_gateway_authenticated(ip, gw):
+    """Local check: verify if the gateway has authenticated the MAC/IP without using WAN routing."""
+    # 1. Try status page
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.bind((ip, 0))
+        s.settimeout(2.0)
+        s.connect((gw, 80))
+        req = (
+            "GET /status HTTP/1.1\r\n"
+            f"Host: {gw}\r\n"
+            "User-Agent: Mozilla/5.0\r\n"
+            "Connection: close\r\n\r\n"
+        )
+        s.sendall(req.encode('utf-8'))
+        res = b""
+        while True:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            res += chunk
+        s.close()
+        res_text = res.decode('utf-8', errors='ignore')
+        if "inetcenter.vn" in res_text or "status" in res_text or "refresh" in res_text:
+            return True
+    except Exception:
+        pass
+
+    # 2. Try login page (if it has form, we are offline)
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.bind((ip, 0))
+        s.settimeout(2.0)
+        s.connect((gw, 80))
+        req = (
+            "GET /login HTTP/1.1\r\n"
+            f"Host: {gw}\r\n"
+            "User-Agent: Mozilla/5.0\r\n"
+            "Connection: close\r\n\r\n"
+        )
+        s.sendall(req.encode('utf-8'))
+        res = b""
+        while True:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            res += chunk
+        s.close()
+        res_text = res.decode('utf-8', errors='ignore')
+        if 'id="serial"' in res_text or 'name="username"' in res_text:
+            return False
+    except Exception:
+        # If /login timed out or failed but port 80 is open, it's authenticated
+        return True
+
+    return False
+
+
+def multiple_gateways_exist():
+    """Checks if there are multiple active IPv4 default gateways on the system."""
+    try:
+        res = subprocess.run("ipconfig", shell=True, capture_output=True, text=True)
+        lines = res.stdout.splitlines()
+        count = 0
+        for line in lines:
+            if "Default Gateway" in line:
+                m = re.search(r"Default Gateway[ .:]+([\d.]+)", line)
+                if m and m.group(1).strip() != "":
+                    count += 1
+        return count > 1
+    except Exception:
+        return False
+
+
+def is_interface_online(ip, gw):
+    """Robust internet check that handles Windows multi-NIC routing issues."""
+    # 1. Try standard WAN check
+    if check_internet(ip):
+        return True
+        
+    # 2. Fallback to local gateway auth check if multiple gateways are connected
+    if multiple_gateways_exist():
+        return check_gateway_authenticated(ip, gw)
+        
+    return False
+
+
 def do_login_cached(ip, gw, cached):
     """Try cached credentials directly (no cloud API). Returns True if works."""
     post_params = {
@@ -194,7 +319,7 @@ def do_login_cached(ip, gw, cached):
     }
     post_data = urllib.parse.urlencode(post_params)
     post_local_gateway(ip, gw, post_data)
-    return check_internet(ip)
+    return is_interface_online(ip, gw)
 
 
 def do_login_cloud(ip, gw):
@@ -271,7 +396,7 @@ def do_login_cloud(ip, gw):
     post_data = urllib.parse.urlencode(post_params)
     post_local_gateway(ip, gw, post_data)
     
-    success = check_internet(ip)
+    success = is_interface_online(ip, gw)
     return success, creds if success else None
 
 
@@ -279,11 +404,14 @@ def keepalive_worker(stop_event):
     """Background thread: pings detectportal every 1s. Sets block_event on failure."""
     while not stop_event.is_set():
         try:
+            # Auto-connect disconnected interfaces
+            ensure_secondary_connections()
+            
             inet_interfaces = get_connected_inet_interfaces()
             for iface in inet_interfaces:
                 ip, gw = get_interface_details(iface)
                 if ip and gw:
-                    online = check_internet(ip)
+                    online = is_interface_online(ip, gw)
                     if not online:
                         block_event.set()
                         break
@@ -299,7 +427,7 @@ def main():
         lock_socket.bind(('127.0.0.1', LOCK_PORT))
         lock_socket.listen(1)
     except socket.error:
-        print("[*] Another instance is already running. Exiting.")
+        log_message("[*] Another instance is already running. Exiting.")
         sys.exit(0)
 
     # Load cached credentials from disk
@@ -312,9 +440,9 @@ def main():
     keepalive_thread.start()
     atexit.register(lambda: stop_event.set())
     
-    print(f"[*] INET Auto-Connect v2 — Monitoring '{SSID_NAME}'")
-    print(f"[*] Keepalive: every 1s | Cache: {creds_status}")
-    print(f"[*] Re-auth target: ~1s")
+    log_message(f"[*] INET Auto-Connect v3 — Monitoring '{SSID_NAME}'")
+    log_message(f"[*] Keepalive: every 1s | Cache: {creds_status}")
+    log_message(f"[*] Re-auth target: ~1s | Log file: {LOG_FILE}")
 
     while True:
         try:
@@ -344,16 +472,16 @@ def main():
                 if was_blocked or current_time >= state["next_check"]:
                     ip, gw = get_interface_details(iface)
                     if ip and gw:
-                        online = check_internet(ip)
+                        online = is_interface_online(ip, gw)
                         if online:
                             if not state["is_online"]:
-                                print(f"[+] Interface '{iface}' (IP: {ip}) is ONLINE.")
+                                log_message(f"[+] Interface '{iface}' (IP: {ip}) is ONLINE.")
                             state["is_online"] = True
                             state["failures"] = 0
                             state["next_check"] = current_time + 10
                         else:
                             state["is_online"] = False
-                            print(f"[*] Interface '{iface}' blocked. Authenticating...")
+                            log_message(f"[*] Interface '{iface}' blocked. Authenticating...")
 
                             success = False
 
@@ -361,20 +489,20 @@ def main():
                             if creds_cache:
                                 success = do_login_cached(ip, gw, creds_cache)
                                 if success:
-                                    print(f"[+] Authenticated via cached credentials!")
+                                    log_message(f"[+] Authenticated via cached credentials!")
 
                             # Path 2: fallback to cloud API (~1-3s)
                             if not success:
-                                print(f"[*] Fetching fresh credentials from cloud API...")
+                                log_message(f"[*] Fetching fresh credentials from cloud API...")
                                 success, new_creds = do_login_cloud(ip, gw)
                                 if success:
-                                    print(f"[+] Authenticated via cloud API (cached for next time).")
+                                    log_message(f"[+] Authenticated via cloud API (cached for next time).")
                                     save_cache(new_creds)
                                     with cache_lock:
                                         creds_cache.clear()
                                         creds_cache.update(new_creds)
                                 else:
-                                    print(f"[-] Cloud API authentication failed.")
+                                    log_message(f"[-] Cloud API authentication failed.")
 
                             if success:
                                 state["failures"] = 0
@@ -383,13 +511,13 @@ def main():
                             else:
                                 state["failures"] += 1
                                 backoff = min(10 * (2 ** (state["failures"] - 1)), BACKOFF_MAX)
-                                print(f"[-] Retrying in {backoff}s...")
+                                log_message(f"[-] Retrying in {backoff}s...")
                                 state["next_check"] = current_time + backoff
                     else:
                         state["next_check"] = current_time + 5
 
         except Exception as e:
-            print(f"[-] Error in daemon loop: {e}")
+            log_message(f"[-] Error in daemon loop: {e}")
 
         time.sleep(0.5)
 
