@@ -331,33 +331,89 @@ def do_login_cloud(ip, gw):
     query_str = urllib.parse.urlencode(params)
     login_referer = f"http://v1.awingconnect.vn/login?{query_str}"
     
+    # Establish session and get Cookie
+    try:
+        session_req = urllib.request.Request(login_referer, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(session_req, timeout=3) as session_resp:
+            cookie = session_resp.info().get('Set-Cookie', '')
+        cookie_val = re.search(r'ingresscookie=([^;]+)', cookie).group(1) if cookie else None
+    except Exception as e:
+        log_message(f"[-] Failed to establish session with Awing cloud: {e}")
+        return False, None
+
+    if not cookie_val:
+        log_message("[-] ingresscookie was not set by Awing cloud.")
+        return False, None
+
+    # Call VerifyUrl
     url = "http://v1.awingconnect.vn/Home/VerifyUrl"
     req = urllib.request.Request(
         url,
         data=b"",
         headers={
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Referer': login_referer
+            'User-Agent': 'Mozilla/5.0',
+            'Referer': login_referer,
+            'Cookie': f"ingresscookie={cookie_val}"
         }
     )
 
     try:
-        # Awing's VerifyUrl requires setting Cookie to the ingresscookie returned by /login
-        session_req = urllib.request.Request(login_referer, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(session_req, timeout=3) as session_resp:
-            cookie = session_resp.info().get('Set-Cookie', '')
-        if cookie:
-            req.add_header('Cookie', cookie)
-            
         with urllib.request.urlopen(req, timeout=3) as response:
             res_data = json.loads(response.read().decode('utf-8'))
     except Exception as e:
-        log_message(f"[-] Error calling Awing cloud API: {e}")
+        log_message(f"[-] Error calling Awing VerifyUrl: {e}")
         return False, None
 
-    form_html = res_data.get('captiveContext', {}).get('contentAuthenForm', '')
+    # Populate customer fields (Auto-bypass survey questions like Gender/Age)
+    cc = res_data.get('captiveContext', {})
+    cust = cc.get('customer')
+    if not cust:
+        cust = {
+            "macAddress": client_mac.replace(":", "-").upper(),
+            "name": None,
+            "phone": None,
+            "gender": True, # True = Male, bypasses gender survey
+            "birthday": {"year": 2000, "month": 1, "day": 1}, # Bypasses year of birth survey
+            "email": None,
+            "device": {
+                "deviceName": "Windows",
+                "brandName": "Microsoft",
+                "deviceCode": "PC",
+                "os": "Windows NT",
+                "osValue": 100,
+                "language": "vi-VN"
+            }
+        }
+        cc['customer'] = cust
+    else:
+        if cust.get('gender') is None:
+            cust['gender'] = True
+        if cust.get('birthday') is None:
+            cust['birthday'] = {"year": 2000, "month": 1, "day": 1}
+
+    # POST to GetCustomer to submit survey and retrieve the authentication form
+    customer_url = "http://v1.awingconnect.vn/Content/GetCustomer"
+    customer_req = urllib.request.Request(
+        customer_url,
+        data=json.dumps(res_data).encode('utf-8'),
+        headers={
+            'User-Agent': 'Mozilla/5.0',
+            'Content-Type': 'application/json; charset=utf-8',
+            'Referer': login_referer,
+            'Cookie': f"ingresscookie={cookie_val}"
+        }
+    )
+
+    try:
+        with urllib.request.urlopen(customer_req, timeout=3) as customer_response:
+            customer_res_data = json.loads(customer_response.read().decode('utf-8'))
+    except Exception as e:
+        log_message(f"[-] Error calling GetCustomer API: {e}")
+        return False, None
+
+    form_html = customer_res_data.get('captiveContext', {}).get('contentAuthenForm', '')
     if not form_html:
-        log_message("[-] Empty contentAuthenForm returned by cloud API.")
+        log_message("[-] Empty contentAuthenForm returned by GetCustomer API.")
         return False, None
 
     try:
