@@ -262,7 +262,7 @@ def do_login_cloud(ip, gw):
     if not html:
         return False, None
     
-    # Extraction variables
+    # Extraction variables (initialized to None)
     serial = None
     client_mac = None
     client_ip = None
@@ -292,7 +292,8 @@ def do_login_cloud(ip, gw):
             log_message(f"[-] Failed parsing Location redirect header: {e}")
 
     # Method 2: Parse from HTML body (local portal page)
-    if not all([serial, client_mac, client_ip, userurl, login_url, chap_id, chap_challenge]):
+    # Check if any variable is still None
+    if None in [serial, client_mac, client_ip, userurl, login_url, chap_id, chap_challenge]:
         try:
             serial_m = re.search(r'id="serial"\s+value="([^"]*)"', html)
             client_mac_m = re.search(r'id="client_mac"\s+value="([^"]*)"', html)
@@ -314,8 +315,8 @@ def do_login_cloud(ip, gw):
         except Exception as e:
             log_message(f"[-] Failed parsing HTML body: {e}")
 
-    # Verify we got everything
-    if not all([serial, client_mac, client_ip, userurl, login_url, chap_id, chap_challenge]):
+    # Verify we got everything (Check for None instead of falsy empty strings)
+    if None in [serial, client_mac, client_ip, userurl, login_url, chap_id, chap_challenge]:
         log_message("[-] Incomplete variables retrieved from gateway. Cannot proceed.")
         return False, None
 
@@ -364,56 +365,64 @@ def do_login_cloud(ip, gw):
         log_message(f"[-] Error calling Awing VerifyUrl: {e}")
         return False, None
 
-    # Populate customer fields (Auto-bypass survey questions like Gender/Age)
-    cc = res_data.get('captiveContext', {})
-    cust = cc.get('customer')
-    if not cust:
-        cust = {
-            "macAddress": client_mac.replace(":", "-").upper(),
-            "name": None,
-            "phone": None,
-            "gender": True, # True = Male, bypasses gender survey
-            "birthday": {"year": 2000, "month": 1, "day": 1}, # Bypasses year of birth survey
-            "email": None,
-            "device": {
-                "deviceName": "Windows",
-                "brandName": "Microsoft",
-                "deviceCode": "PC",
-                "os": "Windows NT",
-                "osValue": 100,
-                "language": "vi-VN"
-            }
-        }
-        cc['customer'] = cust
-    else:
-        if cust.get('gender') is None:
-            cust['gender'] = True
-        if cust.get('birthday') is None:
-            cust['birthday'] = {"year": 2000, "month": 1, "day": 1}
-
-    # POST to GetCustomer to submit survey and retrieve the authentication form
-    customer_url = "http://v1.awingconnect.vn/Content/GetCustomer"
-    customer_req = urllib.request.Request(
-        customer_url,
-        data=json.dumps(res_data).encode('utf-8'),
-        headers={
-            'User-Agent': 'Mozilla/5.0',
-            'Content-Type': 'application/json; charset=utf-8',
-            'Referer': login_referer,
-            'Cookie': f"ingresscookie={cookie_val}"
-        }
-    )
-
-    try:
-        with urllib.request.urlopen(customer_req, timeout=3) as customer_response:
-            customer_res_data = json.loads(customer_response.read().decode('utf-8'))
-    except Exception as e:
-        log_message(f"[-] Error calling GetCustomer API: {e}")
-        return False, None
-
-    form_html = customer_res_data.get('captiveContext', {}).get('contentAuthenForm', '')
+    # Parse and extract authentication form from VerifyUrl response first
+    form_html = res_data.get('captiveContext', {}).get('contentAuthenForm', '')
+    
+    # If form_html is empty, it means we might have to bypass survey questions (customerRequiredFields)
     if not form_html:
-        log_message("[-] Empty contentAuthenForm returned by GetCustomer API.")
+        req_fields = res_data.get('captiveContext', {}).get('customerRequiredFields', [])
+        log_message(f"[*] Captive portal requires survey fields: {req_fields}. Submitting automatic survey...")
+        
+        # Populate customer fields (Auto-bypass survey questions like Gender/Age)
+        cc = res_data.get('captiveContext', {})
+        cust = cc.get('customer')
+        if not cust:
+            cust = {
+                "macAddress": client_mac.replace(":", "-").upper(),
+                "name": None,
+                "phone": None,
+                "gender": True, # True = Male, bypasses gender survey
+                "birthday": {"year": 2000, "month": 1, "day": 1}, # Bypasses year of birth survey
+                "email": None,
+                "device": {
+                    "deviceName": "Windows",
+                    "brandName": "Microsoft",
+                    "deviceCode": "PC",
+                    "os": "Windows NT",
+                    "osValue": 100,
+                    "language": "vi-VN"
+                }
+            }
+            cc['customer'] = cust
+        else:
+            if cust.get('gender') is None:
+                cust['gender'] = True
+            if cust.get('birthday') is None:
+                cust['birthday'] = {"year": 2000, "month": 1, "day": 1}
+
+        # POST to GetCustomer to submit survey and retrieve the authentication form
+        customer_url = "http://v1.awingconnect.vn/Content/GetCustomer"
+        customer_req = urllib.request.Request(
+            customer_url,
+            data=json.dumps(res_data).encode('utf-8'),
+            headers={
+                'User-Agent': 'Mozilla/5.0',
+                'Content-Type': 'application/json; charset=utf-8',
+                'Referer': login_referer,
+                'Cookie': f"ingresscookie={cookie_val}"
+            }
+        )
+
+        try:
+            with urllib.request.urlopen(customer_req, timeout=3) as customer_response:
+                customer_res_data = json.loads(customer_response.read().decode('utf-8'))
+                form_html = customer_res_data.get('captiveContext', {}).get('contentAuthenForm', '')
+        except Exception as e:
+            log_message(f"[-] Error calling GetCustomer API: {e}")
+            return False, None
+
+    if not form_html:
+        log_message("[-] Empty contentAuthenForm returned by gateway/cloud APIs.")
         return False, None
 
     try:
