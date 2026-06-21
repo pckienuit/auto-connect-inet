@@ -50,31 +50,38 @@ rd /s /q D:\auto-connect-inet
 
 ## 🔬 Cơ chế kỹ thuật
 
-### V2 — Keepalive + Cached Credentials
+### V3.1 — Immune Mode & Gaming Mode (Keepalive + Local Gate-check)
 
 ```
-keepalive thread (1s)           main loop
+keepalive thread (0.5s)          main loop
       │                            │
-      ├─ ping detectportal ───────┤ (chờ event)
+      ├─ Local gateway check ─────┤ (chờ event)
+      │  (/status & /login)        │
       │                            │
-      ├─ [MẤT MẠNG!] ──────► event!
+      ├─ [MẤT MẠNG / BLOCKED] ────► event!
       │                            ├─ cached creds? → POST gateway (~0.3s) ✅
+      │                            │                 (Spam 3 lần để ép auth)
       │                            ├─ không?         → cloud API (~1-3s)
-      │                            └─ online lại
+      │                            └─ online lại (Bỏ backoff, retry 1s)
 ```
 
-1. **Cached credentials:** Sau lần login cloud đầu tiên, lưu username/password vào `.creds_cache.json`. Lần bị block kế tiếp POST thẳng vào gateway local — không cần chạm cloud.
+1. **Auto-connect disconnected adapter:** Khác với V2 chỉ giám sát các interface đang kết nối, V3.1 chủ động gọi `netsh wlan connect` để hồi sinh các card mạng phụ/USB WiFi nếu chúng bị mất kết nối hoặc lệch SSID.
 
-2. **Background keepalive:** Thread riêng ping detectportal.firefox.com mỗi 1s (timeout 0.5s). Dùng `threading.Event` để đánh thức main loop ngay khi phát hiện mất mạng.
+2. **Local Gate-check (Bypass VPN & Multi-NIC):** 
+   - Ở bản V2, việc check internet sử dụng ping WAN (`detectportal.firefox.com`) bị lỗi khi chạy song song nhiều card mạng (do sai lệch Metric routing) hoặc khi đang bật VPN/Tailscale (gói tin ping bị VPN bắt đi làm script tưởng đã online).
+   - Bản V3.1 chuyển sang truy vấn trực tiếp cổng chào cục bộ (`192.168.200.1` cổng 80). Do thuộc local subnet, gói tin này đi thẳng ra card mạng vật lý tương ứng mà không bị ảnh hưởng bởi VPN hay Metric. Nếu gateway trả về trang `/login` chứa form nhập → Xác định bị block. Nếu gateway trả về redirect `/status` hoặc timeout → Xác định đã ONLINE.
 
-3. **Cloud API fallback:** Nếu cached creds hết hạn, gọi `v1.awingconnect.vn/Home/VerifyUrl` timeout 3s, parse form, lấy creds mới, cache lại.
+3. **Spam Cached Login (Fast Re-auth):** Khi re-auth, script sẽ gửi liên tiếp 3 request POST thông tin đăng nhập trong cache cách nhau 100ms để ép gateway xử lý lập tức, tăng độ tin cậy khi truyền tải gói tin không dây.
+
+4. **Zero Backoff (Gaming Mode):** Không áp dụng thời gian phạt tăng dần (exponential backoff) khi auth fail. Script sẽ liên tục quét và thử lại sau mỗi 1 giây để khôi phục mạng nhanh nhất khi bác đang chơi game.
 
 ### So sánh thời gian re-auth (mất mạng → có mạng lại)
 
 ```
 Gốc (v0)   ████████████████████████████████████████  20-30s
 V1         ██████████████                             5-10s
-V2 này     ███                                        ~1-2s 🏁
+V2         ███                                        ~1-2s
+V3.1 này   █                                          ~0.3s (Gaming Mode) 🏁
 ```
 
 ## 📦 Links
