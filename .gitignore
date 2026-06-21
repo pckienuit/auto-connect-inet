@@ -7,3 +7,8 @@ __pycache__/
 
 # Credentials cache
 .creds_cache.json
+
+# Local logs
+*.log
+*.txt
+*.html
