@@ -52,9 +52,27 @@ taskkill /f /im auto_connect_inet.exe
 rd /s /q D:\auto-connect-inet
 ```
 
-## 🔬 Cơ chế kỹ thuật
+## 🔬 Cơ chế kỹ thuật qua các phiên bản
 
-### V3.1 — Immune Mode & Gaming Mode (Keepalive + Local Gate-check)
+### 1. Phiên bản gốc (V1.0 - Single Interface Setup)
+* **Check Internet:** Thực hiện request HTTP GET tuần tự đến `neverssl.com` trong vòng lặp chính.
+* **Thời gian Re-auth:** Khá chậm (~5-10s) do bị block đồng bộ trong luồng chính và phải đợi cloud API phản hồi mỗi lần.
+* **Điểm yếu:** Chỉ theo dõi card mạng đang chạy, nếu card WiFi bị rớt kết nối vật lý thì script hoàn toàn mất tác dụng.
+
+### 2. Phiên bản cải tiến (V2.0 - Keepalive & Credentials Cache)
+* **Check Internet:** Sử dụng thread riêng để ping `detectportal.firefox.com` (timeout 0.5s) định kỳ mỗi 1s. Truyền tín hiệu re-auth thông qua `threading.Event`.
+* **Đăng nhập nhanh:** Sau lần đầu xác thực với cloud API thành công, credentials được lưu vào `.creds_cache.json` để tự động POST thẳng vào gateway cục bộ ở lần tiếp theo, giảm thiểu thời gian re-auth xuống còn **~1-2s**.
+* **Hạn chế:** Bị lỗi báo ONLINE giả nếu bật VPN/Tailscale Exit Node (gói check WAN ping bị định tuyến xuyên qua VPN) hoặc lỗi xung đột định tuyến (Metric) khi cắm 2 card mạng song song.
+
+### 3. Phiên bản Gaming Mode (V3.2 - Precise local checks & Spam auth)
+* **Check Internet (Precise local checks):** Loại bỏ ping WAN, chuyển sang check trực tiếp cổng chào cục bộ (`192.168.200.1`). Nhận diện chính xác trạng thái online/offline bằng cách so khớp tên miền thành công (`inetcenter.vn`) và form nhập `/login` (tránh bypass của VPN/Tailscale).
+* **Gaming Keepalive (500ms):** Tần suất check tăng lên mỗi 0.5s, timeout 300ms.
+* **Spam Auth:** Khi mất mạng, spam POST credentials liên tiếp 3 lần cách nhau 100ms để ép gateway xử lý.
+* **Zero Backoff:** Bỏ hoàn toàn án phạt chờ đợi re-auth (exponential backoff) để đảm bảo re-auth liên tục mỗi 1 giây cho đến khi mạng hồi phục. Thời gian re-auth giảm xuống còn **~0.3s**.
+
+### 4. Phiên bản hiện tại (V3.3 - Proactive Refresh & Manual Trigger)
+* **Tự động làm mới (Proactive Refresh):** Đếm ngược 14 phút kể từ lần xác thực thành công gần nhất. Script sẽ chủ động `/logout` và tự động re-auth cực nhanh trước khi router tự đá phiên ở phút thứ 15.
+* **Lắng nghe phím tắt:** Tích hợp Socket Listener chạy nền lắng nghe tín hiệu ở port `49999`. Khi nhấp đúp file `ProactiveRefresh.bat` ngoài màn hình trước khi tìm trận đấu, daemon chính sẽ ngay lập tức được đánh thức để tái xác thực hệ thống, reset bộ đếm 15 phút về 0 để đảm bảo 100% không bị đứt mạng giữa trận đấu.
 
 ```
 keepalive thread (0.5s)          main loop
@@ -62,30 +80,20 @@ keepalive thread (0.5s)          main loop
       ├─ Local gateway check ─────┤ (chờ event)
       │  (/status & /login)        │
       │                            │
-      ├─ [MẤT MẠNG / BLOCKED] ────► event!
+      ├─ [MẤT MẠNG / PROACTIVE] ──► event!
       │                            ├─ cached creds? → POST gateway (~0.3s) ✅
       │                            │                 (Spam 3 lần để ép auth)
       │                            ├─ không?         → cloud API (~1-3s)
       │                            └─ online lại (Bỏ backoff, retry 1s)
 ```
 
-1. **Auto-connect disconnected adapter:** Khác với V2 chỉ giám sát các interface đang kết nối, V3.1 chủ động gọi `netsh wlan connect` để hồi sinh các card mạng phụ/USB WiFi nếu chúng bị mất kết nối hoặc lệch SSID.
-
-2. **Local Gate-check (Bypass VPN & Multi-NIC):** 
-   - Ở bản V2, việc check internet sử dụng ping WAN (`detectportal.firefox.com`) bị lỗi khi chạy song song nhiều card mạng (do sai lệch Metric routing) hoặc khi đang bật VPN/Tailscale (gói tin ping bị VPN bắt đi làm script tưởng đã online).
-   - Bản V3.1 chuyển sang truy vấn trực tiếp cổng chào cục bộ (`192.168.200.1` cổng 80). Do thuộc local subnet, gói tin này đi thẳng ra card mạng vật lý tương ứng mà không bị ảnh hưởng bởi VPN hay Metric. Nếu gateway trả về trang `/login` chứa form nhập → Xác định bị block. Nếu gateway trả về redirect `/status` hoặc timeout → Xác định đã ONLINE.
-
-3. **Spam Cached Login (Fast Re-auth):** Khi re-auth, script sẽ gửi liên tiếp 3 request POST thông tin đăng nhập trong cache cách nhau 100ms để ép gateway xử lý lập tức, tăng độ tin cậy khi truyền tải gói tin không dây.
-
-4. **Zero Backoff (Gaming Mode):** Không áp dụng thời gian phạt tăng dần (exponential backoff) khi auth fail. Script sẽ liên tục quét và thử lại sau mỗi 1 giây để khôi phục mạng nhanh nhất khi bác đang chơi game.
-
-### So sánh thời gian re-auth (mất mạng → có mạng lại)
+### So sánh hiệu năng re-auth qua các phiên bản
 
 ```
-Gốc (v0)   ████████████████████████████████████████  20-30s
-V1         ██████████████                             5-10s
-V2         ███                                        ~1-2s
-V3.1 này   █                                          ~0.3s (Gaming Mode) 🏁
+Gốc (v1.0) ████████████████████████████████████████  20-30s
+V2.0       ██████████████                             5-10s
+V3.2       ███                                        ~1-2s
+V3.3 này   █                                          ~0.3s (Gaming Mode) 🏁
 ```
 
 ## 📦 Links
