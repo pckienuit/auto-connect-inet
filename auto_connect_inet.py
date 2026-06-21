@@ -12,16 +12,15 @@ import atexit
 
 SSID_NAME = "INET - Free WiFi"
 LOCK_PORT = 49999
-BACKOFF_MAX = 300
 
 # Directory paths
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CACHE_FILE = os.path.join(SCRIPT_DIR, ".creds_cache.json")
 LOG_FILE = os.path.join(SCRIPT_DIR, "auto_connect_inet.log")
 
-# Keepalive settings
-KEEPALIVE_INTERVAL = 1.0    # Background ping every 1s
-KEEPALIVE_TIMEOUT = 0.5     # 500ms per ping
+# Keepalive settings (Optimized for Gaming Mode)
+KEEPALIVE_INTERVAL = 0.5    # Background check every 500ms
+KEEPALIVE_TIMEOUT = 0.3     # 300ms per ping/check
 
 interface_states = {}
 creds_cache = {}
@@ -134,7 +133,8 @@ def ensure_secondary_connections():
             state = state_match.group(1) if state_match else ""
             current_ssid = ssid_match.group(1).strip() if ssid_match else ""
             
-            if state != "connected" or current_ssid != SSID_NAME:
+            # Only connect if disconnected or connected to wrong network (ignore associating/authenticating)
+            if state == "disconnected" or (state == "connected" and current_ssid != SSID_NAME):
                 log_message(f"[*] Interface '{name}' is disconnected or wrong SSID ({current_ssid}). Reconnecting to '{SSID_NAME}'...")
                 subprocess.run(f'netsh wlan connect name="{SSID_NAME}" interface="{name}"', shell=True, capture_output=True)
     except Exception as e:
@@ -144,7 +144,7 @@ def ensure_secondary_connections():
 def query_local_gateway(bind_ip, gateway_ip):
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.bind((bind_ip, 0))
-    s.settimeout(3)
+    s.settimeout(2)
     try:
         s.connect((gateway_ip, 80))
         req = (
@@ -169,7 +169,7 @@ def query_local_gateway(bind_ip, gateway_ip):
 def post_local_gateway(bind_ip, gateway_ip, post_data):
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.bind((bind_ip, 0))
-    s.settimeout(3)
+    s.settimeout(2)
     try:
         s.connect((gateway_ip, 80))
         req_body = (
@@ -228,7 +228,7 @@ def check_gateway_authenticated(ip, gw):
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.bind((ip, 0))
-        s.settimeout(2.0)
+        s.settimeout(1.5)
         s.connect((gw, 80))
         req = (
             "GET /status HTTP/1.1\r\n"
@@ -254,7 +254,7 @@ def check_gateway_authenticated(ip, gw):
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.bind((ip, 0))
-        s.settimeout(2.0)
+        s.settimeout(1.5)
         s.connect((gw, 80))
         req = (
             "GET /login HTTP/1.1\r\n"
@@ -310,7 +310,7 @@ def is_interface_online(ip, gw):
 
 
 def do_login_cached(ip, gw, cached):
-    """Try cached credentials directly (no cloud API). Returns True if works."""
+    """Try cached credentials directly (no cloud API). Spam the gateway to force fast authorization."""
     post_params = {
         'username': cached['username'],
         'password': cached['password'],
@@ -318,7 +318,13 @@ def do_login_cached(ip, gw, cached):
         'popup': cached['popup']
     }
     post_data = urllib.parse.urlencode(post_params)
-    post_local_gateway(ip, gw, post_data)
+    
+    # Aggressive: Spam gateway 3 times with 100ms intervals to overcome packet drops or busy gateway
+    for i in range(3):
+        post_local_gateway(ip, gw, post_data)
+        if i < 2:
+            time.sleep(0.1)
+            
     return is_interface_online(ip, gw)
 
 
@@ -401,7 +407,7 @@ def do_login_cloud(ip, gw):
 
 
 def keepalive_worker(stop_event):
-    """Background thread: pings detectportal every 1s. Sets block_event on failure."""
+    """Background thread: pings detectportal/gateway every 500ms. Sets block_event on failure."""
     while not stop_event.is_set():
         try:
             # Auto-connect disconnected interfaces
@@ -421,6 +427,14 @@ def keepalive_worker(stop_event):
 
 
 def main():
+    # Set high process priority if possible (requires admin, but does no harm on failure)
+    try:
+        import psutil
+        p = psutil.Process(os.getpid())
+        p.nice(psutil.HIGH_PRIORITY_CLASS)
+    except:
+        pass
+
     # Single instance lock
     try:
         lock_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -440,14 +454,14 @@ def main():
     keepalive_thread.start()
     atexit.register(lambda: stop_event.set())
     
-    log_message(f"[*] INET Auto-Connect v3 — Monitoring '{SSID_NAME}'")
-    log_message(f"[*] Keepalive: every 1s | Cache: {creds_status}")
-    log_message(f"[*] Re-auth target: ~1s | Log file: {LOG_FILE}")
+    log_message(f"[*] INET Auto-Connect v3 (Gaming Mode) — Monitoring '{SSID_NAME}'")
+    log_message(f"[*] Keepalive: every 0.5s | Cache: {creds_status}")
+    log_message(f"[*] Re-auth target: ~300ms | Log file: {LOG_FILE}")
 
     while True:
         try:
-            # Block here until keepalive detects an outage (or timeout for periodic refresh)
-            was_blocked = block_event.wait(timeout=2)
+            # Block here until keepalive detects an outage
+            was_blocked = block_event.wait(timeout=1.5)
             if was_blocked:
                 block_event.clear()
             
@@ -478,7 +492,7 @@ def main():
                                 log_message(f"[+] Interface '{iface}' (IP: {ip}) is ONLINE.")
                             state["is_online"] = True
                             state["failures"] = 0
-                            state["next_check"] = current_time + 10
+                            state["next_check"] = current_time + 5 # Fast re-check in 5 seconds
                         else:
                             state["is_online"] = False
                             log_message(f"[*] Interface '{iface}' blocked. Authenticating...")
@@ -507,19 +521,20 @@ def main():
                             if success:
                                 state["failures"] = 0
                                 state["is_online"] = True
-                                state["next_check"] = current_time + 10
+                                state["next_check"] = current_time + 5
                             else:
                                 state["failures"] += 1
-                                backoff = min(10 * (2 ** (state["failures"] - 1)), BACKOFF_MAX)
+                                # Gaming Mode: No backoff! Retry instantly (every 1 second)
+                                backoff = 1.0
                                 log_message(f"[-] Retrying in {backoff}s...")
                                 state["next_check"] = current_time + backoff
                     else:
-                        state["next_check"] = current_time + 5
+                        state["next_check"] = current_time + 3
 
         except Exception as e:
             log_message(f"[-] Error in daemon loop: {e}")
 
-        time.sleep(0.5)
+        time.sleep(0.1)
 
 
 if __name__ == "__main__":
