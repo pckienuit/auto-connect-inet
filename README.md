@@ -5,13 +5,13 @@ Công cụ tự động đăng nhập và duy trì kết nối WiFi **INET - Fre
 ## ✨ Tính năng
 
 - **Auto-connect disconnected adapter:** Tự động phát hiện và kết nối lại các card mạng phụ (như USB WiFi) vào SSID `"INET - Free WiFi"` nếu bị ngắt kết nối hoặc lệch SSID.
-- **Local Gate-check (Multi-NIC Bypass):** Giải quyết triệt để lỗi xung đột định tuyến (Routing Metric) trên Windows khi cắm song song card mạng chính (Pikachu) và card phụ (INET). Thay vì ping WAN (`detectportal`), script sẽ tự động kiểm tra trạng thái xác thực cục bộ qua cổng chào (`/status` và `/login`) của router.
-- **Keepalive 1s:** Thread riêng ping/check trạng thái cổng chào mỗi 1 giây → phát hiện mất mạng cực nhanh.
+- **Local Gate-check (Immune Mode):** Giải quyết triệt để lỗi xung đột định tuyến (Routing Metric) và lỗi bị VPN/Tailscale chặn/định tuyến nhầm gói tin kiểm tra mạng. Thay vì check ping WAN (`detectportal`), script V3.1 sẽ trực tiếp kiểm tra trạng thái session cục bộ qua cổng chào (`/status` và `/login`) của router. Nhờ đó, script hoạt động chính xác 100% ngay cả khi đang bật VPN/Tailscale.
+- **Keepalive 0.5s (Gaming Mode):** Thread riêng kiểm tra trạng thái cổng chào mỗi 0.5 giây (timeout 300ms) → phát hiện mất mạng cực nhanh, re-auth tức thì để không gây khựng mạng khi chơi game đối kháng.
 - **Cached credentials:** Lưu username/password ra file `.creds_cache.json` → re-auth trực tiếp vào gateway cục bộ (~0.3s) không cần gọi cloud API.
 - **Hỗ trợ ghi Log:** Xuất nhật ký hoạt động trực tiếp ra file `auto_connect_inet.log` để dễ dàng kiểm tra/debug khi chạy ngầm.
 - **Tự động chạy khi bật máy:** Registry HKCU\Run — không cần admin, không dùng Scheduled Task.
 - **Chạy ẩn hoàn toàn:** file `.exe` dạng `--noconsole`, RAM ~7MB.
-- **Exponential backoff:** Nếu auth thực sự lỗi (do nhà mạng), tăng dần thời gian retry lên để tránh spam gateway.
+- **Zero Backoff:** Khi chơi game, nếu auth thực sự lỗi (do nhà mạng), script sẽ liên tục thử lại sau mỗi 1 giây thay vì phạt đợi tăng dần, giúp khôi phục mạng nhanh nhất có thể.
 
 ## 📂 Cấu trúc
 
