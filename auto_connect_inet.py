@@ -210,7 +210,6 @@ def logout_local_gateway(bind_ip, gateway_ip):
             "Connection: close\r\n\r\n"
         )
         s.sendall(req.encode('utf-8'))
-        # Read the first chunk to ensure the request is processed
         s.recv(1024)
         s.close()
         log_message("[*] Successfully sent /logout to local gateway.")
@@ -288,26 +287,61 @@ def do_login_cloud(ip, gw):
     if not html:
         return False, None
     
-    try:
-        serial_m = re.search(r'id="serial"\s+value="([^"]*)"', html)
-        client_mac_m = re.search(r'id="client_mac"\s+value="([^"]*)"', html)
-        client_ip_m = re.search(r'id="client_ip"\s+value="([^"]*)"', html)
-        userurl_m = re.search(r'id="userurl"\s+value="([^"]*)"', html)
-        login_url_m = re.search(r'id="login_url"\s+value="([^"]*)"', html)
-        chap_id_m = re.search(r'id="chap-id"\s+value="([^"]*)"', html)
-        chap_challenge_m = re.search(r'id="chap-challenge"\s+value="([^"]*)"', html)
+    # Extraction variables
+    serial = None
+    client_mac = None
+    client_ip = None
+    userurl = None
+    login_url = None
+    chap_id = None
+    chap_challenge = None
+    
+    # Method 1: Parse from HTTP 302 Location header (external redirect)
+    location_m = re.search(r'Location:\s*(https?://[^\r\n]+)', html, re.IGNORECASE)
+    if location_m:
+        try:
+            redirect_url = location_m.group(1)
+            parsed_url = urllib.parse.urlparse(redirect_url)
+            queries = urllib.parse.parse_qs(parsed_url.query)
+            
+            serial = queries.get('serial', [None])[0]
+            client_mac = queries.get('client_mac', [None])[0]
+            client_ip = queries.get('client_ip', [None])[0]
+            userurl = queries.get('userurl', [None])[0]
+            login_url = queries.get('login_url', [None])[0]
+            chap_id = queries.get('chap-id', [None])[0] or queries.get('chap_id', [None])[0]
+            chap_challenge = queries.get('chap-challenge', [None])[0] or queries.get('chap_challenge', [None])[0]
+            
+            log_message("[*] Extracted variables from HTTP Location redirect header.")
+        except Exception as e:
+            log_message(f"[-] Failed parsing Location redirect header: {e}")
 
-        if not all([serial_m, client_mac_m, client_ip_m, userurl_m, login_url_m, chap_id_m, chap_challenge_m]):
-            return False, None
+    # Method 2: Parse from HTML body (local portal page)
+    if not all([serial, client_mac, client_ip, userurl, login_url, chap_id, chap_challenge]):
+        try:
+            serial_m = re.search(r'id="serial"\s+value="([^"]*)"', html)
+            client_mac_m = re.search(r'id="client_mac"\s+value="([^"]*)"', html)
+            client_ip_m = re.search(r'id="client_ip"\s+value="([^"]*)"', html)
+            userurl_m = re.search(r'id="userurl"\s+value="([^"]*)"', html)
+            login_url_m = re.search(r'id="login_url"\s+value="([^"]*)"', html)
+            chap_id_m = re.search(r'id="chap-id"\s+value="([^"]*)"', html)
+            chap_challenge_m = re.search(r'id="chap-challenge"\s+value="([^"]*)"', html)
 
-        serial = serial_m.group(1)
-        client_mac = client_mac_m.group(1)
-        client_ip = client_ip_m.group(1)
-        userurl = userurl_m.group(1)
-        login_url = login_url_m.group(1)
-        chap_id = chap_id_m.group(1)
-        chap_challenge = chap_challenge_m.group(1)
-    except Exception:
+            serial = serial_m.group(1) if serial_m else serial
+            client_mac = client_mac_m.group(1) if client_mac_m else client_mac
+            client_ip = client_ip_m.group(1) if client_ip_m else client_ip
+            userurl = userurl_m.group(1) if userurl_m else userurl
+            login_url = login_url_m.group(1) if login_url_m else login_url
+            chap_id = chap_id_m.group(1) if chap_id_m else chap_id
+            chap_challenge = chap_challenge_m.group(1) if chap_challenge_m else chap_challenge
+            
+            log_message("[*] Extracted variables from HTML body.")
+        except Exception as e:
+            log_message(f"[-] Failed parsing HTML body: {e}")
+
+    # Verify we got everything
+    if not all([serial, client_mac, client_ip, userurl, login_url, chap_id, chap_challenge]):
+        log_message("[-] Incomplete variables retrieved from gateway. Cannot proceed.")
         return False, None
 
     params = {
@@ -342,11 +376,13 @@ def do_login_cloud(ip, gw):
             
         with urllib.request.urlopen(req, timeout=3) as response:
             res_data = json.loads(response.read().decode('utf-8'))
-    except Exception:
+    except Exception as e:
+        log_message(f"[-] Error calling Awing cloud API: {e}")
         return False, None
 
     form_html = res_data.get('captiveContext', {}).get('contentAuthenForm', '')
     if not form_html:
+        log_message("[-] Empty contentAuthenForm returned by cloud API.")
         return False, None
 
     try:
@@ -354,7 +390,8 @@ def do_login_cloud(ip, gw):
         password = re.search(r'name="password"\s+value="([^"]*)"', form_html).group(1)
         dst = re.search(r'name="dst"\s+value="([^"]*)"', form_html).group(1)
         popup = re.search(r'name="popup"\s+value="([^"]*)"', form_html).group(1)
-    except Exception:
+    except Exception as e:
+        log_message(f"[-] Failed parsing authen form fields: {e}")
         return False, None
 
     creds = {'username': username, 'password': password, 'dst': dst, 'popup': popup}
@@ -449,7 +486,7 @@ def main():
     
     atexit.register(lambda: stop_event.set())
     
-    log_message(f"[*] INET Auto-Connect v3.3 (Gaming & Proactive Mode) — Monitoring '{SSID_NAME}'")
+    log_message(f"[*] INET Auto-Connect v3.4 (Hybrid Mode) — Monitoring '{SSID_NAME}'")
     log_message(f"[*] Keepalive: every 0.5s | Cache: {creds_status}")
     log_message(f"[*] Re-auth target: ~300ms | Log file: {LOG_FILE}")
 
