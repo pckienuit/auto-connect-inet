@@ -123,7 +123,8 @@ def ensure_secondary_connections():
             lines = part.splitlines()
             name = lines[0].strip()
             
-            # Ignore primary interface
+            # Ignore primary interface if configured as "wifi" (case-insensitive)
+            # In single-NIC testing or when WiFi is used, we allow it.
             if name.lower() == "wifi":
                 continue
                 
@@ -194,34 +195,6 @@ def post_local_gateway(bind_ip, gateway_ip, post_data):
         return ""
 
 
-def check_internet(bind_ip):
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.bind((bind_ip, 0))
-        s.settimeout(KEEPALIVE_TIMEOUT)
-        s.connect(('detectportal.firefox.com', 80))
-        req = (
-            "GET /success.txt HTTP/1.1\r\n"
-            "Host: detectportal.firefox.com\r\n"
-            "User-Agent: Mozilla/5.0\r\n"
-            "Connection: close\r\n\r\n"
-        )
-        s.sendall(req.encode('utf-8'))
-        res = b""
-        while True:
-            chunk = s.recv(4096)
-            if not chunk:
-                break
-            res += chunk
-        s.close()
-        response_text = res.decode('utf-8', errors='ignore')
-        if "HTTP/1.1 200 OK" in response_text and "success" in response_text.lower():
-            return True
-        return False
-    except Exception:
-        return False
-
-
 def check_gateway_authenticated(ip, gw):
     """Local check: verify if the gateway has authenticated the MAC/IP without using WAN routing."""
     # 1. Try status page
@@ -280,33 +253,11 @@ def check_gateway_authenticated(ip, gw):
     return False
 
 
-def multiple_gateways_exist():
-    """Checks if there are multiple active IPv4 default gateways on the system."""
-    try:
-        res = subprocess.run("ipconfig", shell=True, capture_output=True, text=True)
-        lines = res.stdout.splitlines()
-        count = 0
-        for line in lines:
-            if "Default Gateway" in line:
-                m = re.search(r"Default Gateway[ .:]+([\d.]+)", line)
-                if m and m.group(1).strip() != "":
-                    count += 1
-        return count > 1
-    except Exception:
-        return False
-
-
 def is_interface_online(ip, gw):
-    """Robust internet check that handles Windows multi-NIC routing issues."""
-    # 1. Try standard WAN check
-    if check_internet(ip):
-        return True
-        
-    # 2. Fallback to local gateway auth check if multiple gateways are connected
-    if multiple_gateways_exist():
-        return check_gateway_authenticated(ip, gw)
-        
-    return False
+    """Robust check that handles Windows multi-NIC routing and VPN/Tailscale interception issues."""
+    # We must use local gateway verification first. This is completely immune to Tailscale/VPN routing
+    # interception and Metric priority.
+    return check_gateway_authenticated(ip, gw)
 
 
 def do_login_cached(ip, gw, cached):
@@ -379,6 +330,14 @@ def do_login_cloud(ip, gw):
     )
 
     try:
+        # Awing's VerifyUrl requires setting Cookie to the ingresscookie returned by /login
+        # Let's perform a fast session request
+        session_req = urllib.request.Request(login_referer, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(session_req, timeout=3) as session_resp:
+            cookie = session_resp.info().get('Set-Cookie', '')
+        if cookie:
+            req.add_header('Cookie', cookie)
+            
         with urllib.request.urlopen(req, timeout=3) as response:
             res_data = json.loads(response.read().decode('utf-8'))
     except Exception:
@@ -407,7 +366,7 @@ def do_login_cloud(ip, gw):
 
 
 def keepalive_worker(stop_event):
-    """Background thread: pings detectportal/gateway every 500ms. Sets block_event on failure."""
+    """Background thread: checks gateway authentication every 500ms. Sets block_event on failure."""
     while not stop_event.is_set():
         try:
             # Auto-connect disconnected interfaces
@@ -427,7 +386,7 @@ def keepalive_worker(stop_event):
 
 
 def main():
-    # Set high process priority if possible (requires admin, but does no harm on failure)
+    # Set high process priority if possible
     try:
         import psutil
         p = psutil.Process(os.getpid())
@@ -454,7 +413,7 @@ def main():
     keepalive_thread.start()
     atexit.register(lambda: stop_event.set())
     
-    log_message(f"[*] INET Auto-Connect v3 (Gaming Mode) — Monitoring '{SSID_NAME}'")
+    log_message(f"[*] INET Auto-Connect v3.1 (Immune Mode) — Monitoring '{SSID_NAME}'")
     log_message(f"[*] Keepalive: every 0.5s | Cache: {creds_status}")
     log_message(f"[*] Re-auth target: ~300ms | Log file: {LOG_FILE}")
 
@@ -492,7 +451,7 @@ def main():
                                 log_message(f"[+] Interface '{iface}' (IP: {ip}) is ONLINE.")
                             state["is_online"] = True
                             state["failures"] = 0
-                            state["next_check"] = current_time + 5 # Fast re-check in 5 seconds
+                            state["next_check"] = current_time + 5
                         else:
                             state["is_online"] = False
                             log_message(f"[*] Interface '{iface}' blocked. Authenticating...")
