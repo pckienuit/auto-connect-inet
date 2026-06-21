@@ -4,11 +4,12 @@ Công cụ tự động đăng nhập và duy trì kết nối WiFi **INET - Fre
 
 ## ✨ Tính năng
 
-- **Keepalive 1s:** Thread riêng ping detectportal.firefox.com mỗi 1 giây → phát hiện mất mạng trong ~0.5s
+- **Ping siêu tốc:** Thread riêng ping detectportal.firefox.com liên tục mỗi **0.2 giây** → phát hiện mất mạng cực nhạy.
+- **Spam Auth (Aggressive Mode):** Khi phát hiện rớt mạng, thay vì gửi POST 1 lần rồi chờ, tool sẽ spam 3 request liên tục cách nhau 100ms vào Gateway để ép xác thực thành công.
+- **Không có Backoff:** Loại bỏ án phạt đếm lùi, rớt phát nhào vô thử lại ngay sau 1-3 giây.
 - **Cached credentials:** Lưu username/password ra file `.creds_cache.json` → re-auth không cần gọi cloud API (~0.3s)
 - **Tự động mỗi khi bật máy:** Registry HKCU\Run — không cần admin, không Scheduled Task
 - **Chạy ẩn hoàn toàn:** file `.exe` dạng `--noconsole`, RAM ~7MB
-- **Exponential backoff:** Nếu auth fail, retry 10s → 20s → 40s → ... → 5 phút
 
 ## 📂 Cấu trúc
 
