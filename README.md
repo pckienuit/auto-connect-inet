@@ -1,12 +1,14 @@
 # Auto-Connect INET - Free WiFi
 
-Công cụ tự động đăng nhập và duy trì kết nối WiFi **INET - Free WiFi** (captive portal AWING) trên Windows 10/11 — không cần mở trình duyệt, re-auth trong **~1-2 giây**.
+Công cụ tự động đăng nhập và duy trì kết nối WiFi **INET - Free WiFi** (captive portal AWING) trên Windows 10/11 — không cần mở trình duyệt, re-auth trong **~0.3 giây**.
 
 ## ✨ Tính năng
 
 - **Auto-connect disconnected adapter:** Tự động phát hiện và kết nối lại các card mạng phụ (như USB WiFi) vào SSID `"INET - Free WiFi"` nếu bị ngắt kết nối hoặc lệch SSID.
-- **Local Gate-check (Immune Mode):** Giải quyết triệt để lỗi xung đột định tuyến (Routing Metric) và lỗi bị VPN/Tailscale chặn/định tuyến nhầm gói tin kiểm tra mạng. Thay vì check ping WAN (`detectportal`), script V3.1 sẽ trực tiếp kiểm tra trạng thái session cục bộ qua cổng chào (`/status` và `/login`) của router. Nhờ đó, script hoạt động chính xác 100% ngay cả khi đang bật VPN/Tailscale.
+- **Local Gate-check (Immune Mode):** Giải quyết triệt để lỗi xung đột định tuyến (Routing Metric) và lỗi bị VPN/Tailscale chặn/định tuyến nhầm gói tin kiểm tra mạng. Thay vì check ping WAN (`detectportal`), script V3.3 sẽ trực tiếp kiểm tra trạng thái session cục bộ qua cổng chào (`/status` và `/login`) của router. Nhờ đó, script hoạt động chính xác 100% ngay cả khi đang bật VPN/Tailscale.
 - **Keepalive 0.5s (Gaming Mode):** Thread riêng kiểm tra trạng thái cổng chào mỗi 0.5 giây (timeout 300ms) → phát hiện mất mạng cực nhanh, re-auth tức thì để không gây khựng mạng khi chơi game đối kháng.
+- **Proactive Refresh (Gia hạn chủ động 14 phút):** Tự động đếm ngược 14 phút kể từ lần xác thực thành công gần nhất. Script sẽ chủ động `/logout` và re-auth cực nhanh (~0.3s) trước khi router đá session ở phút thứ 15.
+- **Nút bấm Refresh thủ công:** Bằng việc tích hợp Socket Listener ở cổng `49999`, bạn có thể nhấp đúp file `ProactiveRefresh.bat` ở Desktop để ép daemon chính tái xác thực ngay lập tức trước khi bắt đầu trận đấu (Lobby/Matchmaking).
 - **Cached credentials:** Lưu username/password ra file `.creds_cache.json` → re-auth trực tiếp vào gateway cục bộ (~0.3s) không cần gọi cloud API.
 - **Hỗ trợ ghi Log:** Xuất nhật ký hoạt động trực tiếp ra file `auto_connect_inet.log` để dễ dàng kiểm tra/debug khi chạy ngầm.
 - **Tự động chạy khi bật máy:** Registry HKCU\Run — không cần admin, không dùng Scheduled Task.
@@ -16,9 +18,11 @@ Công cụ tự động đăng nhập và duy trì kết nối WiFi **INET - Fre
 ## 📂 Cấu trúc
 
 ```
-├── auto_connect_inet.py    # Source Python v3 (auto-reconnect + local gateway checks)
+├── auto_connect_inet.py    # Source Python v3.3 (Proactive + Precise Gaming Mode)
 ├── auto_connect_inet.exe   # Compiled binary (chạy ngầm)
-├── install_v2.bat          # Cài đặt: Registry startup + launch
+├── install.bat             # Cài đặt Registry startup + launch nhanh (Không cần Admin)
+├── ProactiveRefresh.bat    # Phím tắt ép re-auth thủ công trước khi find trận
+├── test_stability.py       # Đo ping jitter, loss và chấm điểm đấu game
 ├── test_download.py        # Test băng thông
 ├── README.md
 └── .gitignore
