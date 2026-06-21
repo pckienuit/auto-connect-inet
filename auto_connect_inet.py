@@ -19,8 +19,8 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CACHE_FILE = os.path.join(SCRIPT_DIR, ".creds_cache.json")
 
 # Keepalive settings
-KEEPALIVE_INTERVAL = 0.2    # Background ping every 200ms
-KEEPALIVE_TIMEOUT = 0.2     # 200ms per ping
+KEEPALIVE_INTERVAL = 1.0    # Background ping every 1s
+KEEPALIVE_TIMEOUT = 0.5     # 500ms per ping
 
 interface_states = {}
 creds_cache = {}
@@ -193,15 +193,8 @@ def do_login_cached(ip, gw, cached):
         'popup': cached['popup']
     }
     post_data = urllib.parse.urlencode(post_params)
-    
-    # Try up to 3 times to authenticate since the captive portal gateway might be busy
-    for _ in range(3):
-        post_local_gateway(ip, gw, post_data)
-        if check_internet(ip):
-            return True
-        time.sleep(0.1)
-        
-    return False
+    post_local_gateway(ip, gw, post_data)
+    return check_internet(ip)
 
 
 def do_login_cloud(ip, gw):
@@ -326,7 +319,7 @@ def main():
     while True:
         try:
             # Block here until keepalive detects an outage (or timeout for periodic refresh)
-            was_blocked = block_event.wait(timeout=0.2)
+            was_blocked = block_event.wait(timeout=2)
             if was_blocked:
                 block_event.clear()
             
@@ -357,7 +350,7 @@ def main():
                                 print(f"[+] Interface '{iface}' (IP: {ip}) is ONLINE.")
                             state["is_online"] = True
                             state["failures"] = 0
-                            state["next_check"] = current_time + 3
+                            state["next_check"] = current_time + 10
                         else:
                             state["is_online"] = False
                             print(f"[*] Interface '{iface}' blocked. Authenticating...")
@@ -386,19 +379,19 @@ def main():
                             if success:
                                 state["failures"] = 0
                                 state["is_online"] = True
-                                state["next_check"] = current_time + 3
+                                state["next_check"] = current_time + 10
                             else:
                                 state["failures"] += 1
                                 backoff = min(10 * (2 ** (state["failures"] - 1)), BACKOFF_MAX)
                                 print(f"[-] Retrying in {backoff}s...")
                                 state["next_check"] = current_time + backoff
                     else:
-                        state["next_check"] = current_time + 1
+                        state["next_check"] = current_time + 5
 
         except Exception as e:
             print(f"[-] Error in daemon loop: {e}")
 
-        time.sleep(0.1)
+        time.sleep(0.5)
 
 
 if __name__ == "__main__":
