@@ -124,7 +124,6 @@ def ensure_secondary_connections():
             name = lines[0].strip()
             
             # Ignore primary interface if configured as "wifi" (case-insensitive)
-            # In single-NIC testing or when WiFi is used, we allow it.
             if name.lower() == "wifi":
                 continue
                 
@@ -197,7 +196,6 @@ def post_local_gateway(bind_ip, gateway_ip, post_data):
 
 def check_gateway_authenticated(ip, gw):
     """Local check: verify if the gateway has authenticated the MAC/IP without using WAN routing."""
-    # 1. Try status page
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.bind((ip, 0))
@@ -206,7 +204,7 @@ def check_gateway_authenticated(ip, gw):
         req = (
             "GET /status HTTP/1.1\r\n"
             f"Host: {gw}\r\n"
-            "User-Agent: Mozilla/5.0\r\n"
+            "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\n"
             "Connection: close\r\n\r\n"
         )
         s.sendall(req.encode('utf-8'))
@@ -218,39 +216,22 @@ def check_gateway_authenticated(ip, gw):
             res += chunk
         s.close()
         res_text = res.decode('utf-8', errors='ignore')
-        if "inetcenter.vn" in res_text or "status" in res_text or "refresh" in res_text:
+        
+        # Precise check of the gateway response:
+        # If we are online, the MikroTik status page redirects to the authorized landing page (inetcenter.vn)
+        if "inetcenter.vn" in res_text.lower():
             return True
-    except Exception:
-        pass
-
-    # 2. Try login page (if it has form, we are offline)
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.bind((ip, 0))
-        s.settimeout(1.5)
-        s.connect((gw, 80))
-        req = (
-            "GET /login HTTP/1.1\r\n"
-            f"Host: {gw}\r\n"
-            "User-Agent: Mozilla/5.0\r\n"
-            "Connection: close\r\n\r\n"
-        )
-        s.sendall(req.encode('utf-8'))
-        res = b""
-        while True:
-            chunk = s.recv(4096)
-            if not chunk:
-                break
-            res += chunk
-        s.close()
-        res_text = res.decode('utf-8', errors='ignore')
-        if 'id="serial"' in res_text or 'name="username"' in res_text:
+        # If we are offline/blocked, /status redirects or refreshes to /login, or contains the login inputs
+        if "login" in res_text.lower() or 'id="serial"' in res_text or 'name="username"' in res_text:
             return False
+            
+        # Fallback: if we got a valid HTTP response but it's a redirect/ok without any login markers
+        if "http/1.1 200" in res_text.lower() or "http/1.1 302" in res_text.lower():
+            return True
+            
+        return False
     except Exception:
-        # If /login timed out or failed but port 80 is open, it's authenticated
-        return True
-
-    return False
+        return False
 
 
 def is_interface_online(ip, gw):
@@ -331,7 +312,6 @@ def do_login_cloud(ip, gw):
 
     try:
         # Awing's VerifyUrl requires setting Cookie to the ingresscookie returned by /login
-        # Let's perform a fast session request
         session_req = urllib.request.Request(login_referer, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(session_req, timeout=3) as session_resp:
             cookie = session_resp.info().get('Set-Cookie', '')
@@ -413,7 +393,7 @@ def main():
     keepalive_thread.start()
     atexit.register(lambda: stop_event.set())
     
-    log_message(f"[*] INET Auto-Connect v3.1 (Immune Mode) — Monitoring '{SSID_NAME}'")
+    log_message(f"[*] INET Auto-Connect v3.2 (Precise Mode) — Monitoring '{SSID_NAME}'")
     log_message(f"[*] Keepalive: every 0.5s | Cache: {creds_status}")
     log_message(f"[*] Re-auth target: ~300ms | Log file: {LOG_FILE}")
 
