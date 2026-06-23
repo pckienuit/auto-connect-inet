@@ -6,7 +6,10 @@ Công cụ tự động đăng nhập và duy trì kết nối WiFi **INET - Fre
 
 - **Auto-connect disconnected adapter:** Tự động phát hiện và kết nối lại các card mạng phụ (như USB WiFi) vào SSID `"INET - Free WiFi"` nếu bị ngắt kết nối hoặc lệch SSID.
 - **Local Gate-check (Immune Mode):** Giải quyết triệt để lỗi xung đột định tuyến (Routing Metric) và lỗi bị VPN/Tailscale chặn/định tuyến nhầm gói tin kiểm tra mạng. Thay vì check ping WAN (`detectportal`), script V3.2 sẽ trực tiếp kiểm tra trạng thái session cục bộ qua cổng chào (`/status` và `/login`) của router. Nhờ đó, script hoạt động chính xác 100% ngay cả khi đang bật VPN/Tailscale.
+- **Bypass Captive Cloud & Survey:** Tự động phát hiện yêu cầu khảo sát tuổi/giới tính và bóc tách địa chỉ Endpoint API động (không fix cứng domain), đảm bảo hoạt động xuyên suốt kể cả khi INET đổi hạ tầng.
+- **Bound HTTP Requests:** Vượt lỗi Windows OS Multi-NIC (chặn đường truyền khi cắm 2 card Wi-Fi), script ép toàn bộ quá trình nhận/gửi session đi đúng IP nội bộ thay vì bị drop bởi Metric cao.
 - **Keepalive 0.5s (Gaming Mode):** Thread riêng kiểm tra trạng thái cổng chào mỗi 0.5 giây (timeout 300ms) → phát hiện mất mạng cực nhanh, re-auth tức thì để không gây khựng mạng khi chơi game đối kháng.
+
 - **Cached credentials:** Lưu username/password ra file `.creds_cache.json` → re-auth trực tiếp vào gateway cục bộ (~0.3s) không cần gọi cloud API.
 - **Hỗ trợ ghi Log:** Xuất nhật ký hoạt động trực tiếp ra file `auto_connect_inet.log` để dễ dàng kiểm tra/debug khi chạy ngầm.
 - **Tự động chạy khi bật máy:** Registry HKCU\Run — không cần admin, không dùng Scheduled Task.
