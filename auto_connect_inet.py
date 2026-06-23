@@ -133,9 +133,13 @@ def ensure_secondary_connections():
             state = state_match.group(1) if state_match else ""
             current_ssid = ssid_match.group(1).strip() if ssid_match else ""
             
+            # Wait for transitional states to finish instead of blasting reconnects
+            if state in ["associating", "authenticating", "disconnecting"]:
+                continue
+                
             # Only connect if disconnected or connected to wrong network (ignore associating/authenticating)
             if state == "disconnected" or (state == "connected" and current_ssid != SSID_NAME):
-                log_message(f"[*] Interface '{name}' is disconnected or wrong SSID ({current_ssid}). Reconnecting to '{SSID_NAME}'...")
+                log_message(f"[*] Interface '{name}' is in state '{state}' or wrong SSID ('{current_ssid}'). Reconnecting to '{SSID_NAME}'...")
                 subprocess.run(f'netsh wlan connect name="{SSID_NAME}" interface="{name}"', shell=True, capture_output=True)
     except Exception as e:
         log_message(f"[-] Error in ensure_secondary_connections: {e}")
@@ -256,8 +260,25 @@ def do_login_cached(ip, gw, cached):
     return is_interface_online(ip, gw)
 
 
+
+def create_bound_opener(ip):
+    import http.client
+    import urllib.request
+    class BoundHTTPConnection(http.client.HTTPConnection):
+        def __init__(self, *args, **kwargs):
+            if 'source_address' in kwargs:
+                del kwargs['source_address']
+            super().__init__(*args, source_address=(ip, 0), **kwargs)
+            
+    class BoundHTTPHandler(urllib.request.HTTPHandler):
+        def http_open(self, req):
+            return self.do_open(BoundHTTPConnection, req)
+            
+    return urllib.request.build_opener(BoundHTTPHandler)
+
 def do_login_cloud(ip, gw):
     """Login via cloud API, cache successful creds. Returns (success, creds_or_None)."""
+    opener = create_bound_opener(ip)
     html = query_local_gateway(ip, gw)
     if not html:
         return False, None
@@ -330,12 +351,13 @@ def do_login_cloud(ip, gw):
         'chap_challenge': chap_challenge
     }
     query_str = urllib.parse.urlencode(params)
-    login_referer = f"http://v1.awingconnect.vn/login?{query_str}"
+    base_url = login_url if login_url and login_url.startswith("http") else "http://v1.awingconnect.vn/login"
+    login_referer = f"{base_url}?{query_str}"
     
     # Establish session and get Cookie
     try:
         session_req = urllib.request.Request(login_referer, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(session_req, timeout=3) as session_resp:
+        with opener.open(session_req, timeout=3) as session_resp:
             cookie = session_resp.info().get('Set-Cookie', '')
         cookie_val = re.search(r'ingresscookie=([^;]+)', cookie).group(1) if cookie else None
     except Exception as e:
@@ -347,7 +369,8 @@ def do_login_cloud(ip, gw):
         return False, None
 
     # Call VerifyUrl
-    url = "http://v1.awingconnect.vn/Home/VerifyUrl"
+    base_domain = urllib.parse.urlparse(base_url).netloc
+    url = f"http://{base_domain}/Home/VerifyUrl"
     req = urllib.request.Request(
         url,
         data=b"",
@@ -359,7 +382,7 @@ def do_login_cloud(ip, gw):
     )
 
     try:
-        with urllib.request.urlopen(req, timeout=3) as response:
+        with opener.open(req, timeout=3) as response:
             res_data = json.loads(response.read().decode('utf-8'))
     except Exception as e:
         log_message(f"[-] Error calling Awing VerifyUrl: {e}")
@@ -401,7 +424,7 @@ def do_login_cloud(ip, gw):
                 cust['birthday'] = {"year": 2000, "month": 1, "day": 1}
 
         # POST to GetCustomer to submit survey and retrieve the authentication form
-        customer_url = "http://v1.awingconnect.vn/Content/GetCustomer"
+        customer_url = f"http://{base_domain}/Content/GetCustomer"
         customer_req = urllib.request.Request(
             customer_url,
             data=json.dumps(res_data).encode('utf-8'),
@@ -414,7 +437,7 @@ def do_login_cloud(ip, gw):
         )
 
         try:
-            with urllib.request.urlopen(customer_req, timeout=3) as customer_response:
+            with opener.open(customer_req, timeout=3) as customer_response:
                 customer_res_data = json.loads(customer_response.read().decode('utf-8'))
                 form_html = customer_res_data.get('captiveContext', {}).get('contentAuthenForm', '')
         except Exception as e:
