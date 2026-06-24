@@ -9,6 +9,8 @@ import urllib.parse
 import subprocess
 import threading
 import atexit
+import hashlib
+import http.cookiejar
 
 SSID_NAME = "INET - Free WiFi"
 LOCK_PORT = 49999
@@ -18,9 +20,9 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CACHE_FILE = os.path.join(SCRIPT_DIR, ".creds_cache.json")
 LOG_FILE = os.path.join(SCRIPT_DIR, "auto_connect_inet.log")
 
-# Keepalive settings (Optimized for Gaming Mode)
-KEEPALIVE_INTERVAL = 0.5    # Background check every 500ms
-KEEPALIVE_TIMEOUT = 0.3     # 300ms per ping/check
+# Optimized intervals: check less aggressively to prevent AP block/blacklist
+KEEPALIVE_INTERVAL = 3.0    # Check authentication status every 3 seconds
+KEEPALIVE_TIMEOUT = 2.0     # 2 seconds connection timeout
 
 interface_states = {}
 creds_cache = {}
@@ -106,7 +108,7 @@ def get_connected_inet_interfaces(target_ssid=SSID_NAME):
             state = state_match.group(1) if state_match else ""
             current_ssid = ssid_match.group(1).strip() if ssid_match else ""
             
-            if state == "connected" and current_ssid == target_ssid:
+            if state == "connected" and current_ssid.lower() == target_ssid.lower():
                 connected_interfaces.append(name)
         return connected_interfaces
     except Exception as e:
@@ -114,101 +116,40 @@ def get_connected_inet_interfaces(target_ssid=SSID_NAME):
         return []
 
 
-def ensure_secondary_connections():
-    """Detects any secondary wireless interfaces that are disconnected or on wrong SSID and connects them."""
-    try:
-        res = subprocess.run("netsh wlan show interfaces", shell=True, capture_output=True, text=True)
-        parts = res.stdout.split("Name                   :")
-        for part in parts[1:]:
-            lines = part.splitlines()
-            name = lines[0].strip()
-            
-            # Ignore primary interface if configured as "wifi" (case-insensitive)
-            if name.lower() == "wifi":
-                continue
-                
-            state_match = re.search(r"State\s+:\s+(\w+)", part)
-            ssid_match = re.search(r"SSID\s+:\s+(.+)", part)
-            
-            state = state_match.group(1) if state_match else ""
-            current_ssid = ssid_match.group(1).strip() if ssid_match else ""
-            
-            # Wait for transitional states to finish instead of blasting reconnects
-            if state in ["associating", "authenticating", "disconnecting"]:
-                continue
-                
-            # Only connect if disconnected or connected to wrong network (ignore associating/authenticating)
-            if state == "disconnected" or (state == "connected" and current_ssid != SSID_NAME):
-                log_message(f"[*] Interface '{name}' is in state '{state}' or wrong SSID ('{current_ssid}'). Reconnecting to '{SSID_NAME}'...")
-                subprocess.run(f'netsh wlan connect name="{SSID_NAME}" interface="{name}"', shell=True, capture_output=True)
-    except Exception as e:
-        log_message(f"[-] Error in ensure_secondary_connections: {e}")
-
-
-def query_local_gateway(bind_ip, gateway_ip):
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.bind((bind_ip, 0))
-    s.settimeout(2)
-    try:
-        s.connect((gateway_ip, 80))
-        req = (
-            "GET /login HTTP/1.1\r\n"
-            f"Host: {gateway_ip}\r\n"
-            "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\n"
-            "Connection: close\r\n\r\n"
-        )
-        s.sendall(req.encode('utf-8'))
-        res = b""
-        while True:
-            chunk = s.recv(4096)
-            if not chunk:
+def parse_octal_string(s):
+    parts = s.split(chr(92))
+    res = bytearray()
+    if parts[0]:
+        res.extend(parts[0].encode('latin1'))
+    for part in parts[1:]:
+        if not part:
+            continue
+        digits = []
+        for char in part:
+            if char.isdigit() and len(digits) < 3:
+                digits.append(char)
+            else:
                 break
-            res += chunk
-        s.close()
-        return res.decode('utf-8', errors='ignore')
-    except Exception:
-        return ""
-
-
-def post_local_gateway(bind_ip, gateway_ip, post_data):
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.bind((bind_ip, 0))
-    s.settimeout(2)
-    try:
-        s.connect((gateway_ip, 80))
-        req_body = (
-            "POST /login HTTP/1.1\r\n"
-            f"Host: {gateway_ip}\r\n"
-            "Content-Type: application/x-www-form-urlencoded\r\n"
-            f"Content-Length: {len(post_data)}\r\n"
-            "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\n"
-            "Connection: close\r\n\r\n"
-            f"{post_data}"
-        )
-        s.sendall(req_body.encode('utf-8'))
-        res = b""
-        while True:
-            chunk = s.recv(4096)
-            if not chunk:
-                break
-            res += chunk
-        s.close()
-        return res.decode('utf-8', errors='ignore')
-    except Exception:
-        return ""
+        digit_str = ''.join(digits)
+        if digit_str:
+            res.append(int(digit_str, 8))
+            res.extend(part[len(digit_str):].encode('latin1'))
+        else:
+            res.extend(bytes([92]))
+            res.extend(part.encode('latin1'))
+    return bytes(res)
 
 
 def check_gateway_authenticated(ip, gw):
-    """Local check: verify if the gateway has authenticated the MAC/IP without using WAN routing."""
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.bind((ip, 0))
-        s.settimeout(1.5)
+        s.settimeout(1.0)
         s.connect((gw, 80))
         req = (
             "GET /status HTTP/1.1\r\n"
             f"Host: {gw}\r\n"
-            "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\n"
+            "User-Agent: Mozilla/5.0\r\n"
             "Connection: close\r\n\r\n"
         )
         s.sendall(req.encode('utf-8'))
@@ -221,13 +162,11 @@ def check_gateway_authenticated(ip, gw):
         s.close()
         res_text = res.decode('utf-8', errors='ignore')
         
-        # Precise check of the gateway response:
-        if "inetcenter.vn" in res_text.lower():
+        if "inetcenter.vn" in res_text.lower() or "Success" in res_text:
             return True
         if "login" in res_text.lower() or 'id="serial"' in res_text or 'name="username"' in res_text:
             return False
-            
-        # Fallback: if we got a valid HTTP response but it's a redirect/ok without any login markers
+        
         if "http/1.1 200" in res_text.lower() or "http/1.1 302" in res_text.lower():
             return True
             
@@ -237,243 +176,167 @@ def check_gateway_authenticated(ip, gw):
 
 
 def is_interface_online(ip, gw):
-    """Robust check that handles Windows multi-NIC routing and VPN/Tailscale interception issues."""
     return check_gateway_authenticated(ip, gw)
 
 
-def do_login_cached(ip, gw, cached):
-    """Try cached credentials directly (no cloud API). Spam the gateway to force fast authorization."""
-    post_params = {
-        'username': cached['username'],
-        'password': cached['password'],
-        'dst': cached['dst'],
-        'popup': cached['popup']
-    }
-    post_data = urllib.parse.urlencode(post_params)
-    
-    # Aggressive: Spam gateway 3 times with 100ms intervals to overcome packet drops or busy gateway
-    for i in range(3):
-        post_local_gateway(ip, gw, post_data)
-        if i < 2:
-            time.sleep(0.1)
-            
-    return is_interface_online(ip, gw)
+def do_login_local_mikrotik(bind_ip, gateway_ip, username, chap_password):
+    """Directly POST login details to the local Mikrotik Hotspot gateway."""
+    try:
+        # Construct raw HTTP POST
+        post_params = {
+            'username': username,
+            'password': chap_password,
+            'dst': 'http://v1.awingconnect.vn/Success',
+            'popup': 'false'
+        }
+        post_data = urllib.parse.urlencode(post_params)
+        
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.bind((bind_ip, 0))
+        s.settimeout(3.0)
+        s.connect((gateway_ip, 80))
+        req_body = (
+            "POST /login HTTP/1.1\r\n"
+            f"Host: {gateway_ip}\r\n"
+            "Content-Type: application/x-www-form-urlencoded\r\n"
+            f"Content-Length: {len(post_data)}\r\n"
+            "User-Agent: Mozilla/5.0\r\n"
+            "Connection: close\r\n\r\n"
+            f"{post_data}"
+        )
+        s.sendall(req_body.encode('utf-8'))
+        res = b""
+        while True:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            res += chunk
+        s.close()
+        return True
+    except Exception as e:
+        log_message(f"[-] Local gateway login post failed: {e}")
+        return False
 
-
-
-def create_bound_opener(ip):
-    import http.client
-    import urllib.request
-    class BoundHTTPConnection(http.client.HTTPConnection):
-        def __init__(self, *args, **kwargs):
-            if 'source_address' in kwargs:
-                del kwargs['source_address']
-            super().__init__(*args, source_address=(ip, 0), **kwargs)
-            
-    class BoundHTTPHandler(urllib.request.HTTPHandler):
-        def http_open(self, req):
-            return self.do_open(BoundHTTPConnection, req)
-            
-    return urllib.request.build_opener(BoundHTTPHandler)
 
 def do_login_cloud(ip, gw):
-    """Login via cloud API, cache successful creds. Returns (success, creds_or_None)."""
-    opener = create_bound_opener(ip)
-    html = query_local_gateway(ip, gw)
-    if not html:
-        return False, None
-    
-    # Extraction variables (initialized to None)
-    serial = None
-    client_mac = None
-    client_ip = None
-    userurl = None
-    login_url = None
-    chap_id = None
-    chap_challenge = None
-    
-    # Method 1: Parse from HTTP 302 Location header (external redirect)
-    location_m = re.search(r'Location:\s*(https?://[^\r\n]+)', html, re.IGNORECASE)
-    if location_m:
-        try:
-            redirect_url = location_m.group(1)
-            parsed_url = urllib.parse.urlparse(redirect_url)
-            queries = urllib.parse.parse_qs(parsed_url.query)
-            
-            serial = queries.get('serial', [None])[0]
-            client_mac = queries.get('client_mac', [None])[0]
-            client_ip = queries.get('client_ip', [None])[0]
-            userurl = queries.get('userurl', [None])[0]
-            login_url = queries.get('login_url', [None])[0]
-            chap_id = queries.get('chap-id', [None])[0] or queries.get('chap_id', [None])[0]
-            chap_challenge = queries.get('chap-challenge', [None])[0] or queries.get('chap_challenge', [None])[0]
-            
-            log_message("[*] Extracted variables from HTTP Location redirect header.")
-        except Exception as e:
-            log_message(f"[-] Failed parsing Location redirect header: {e}")
-
-    # Method 2: Parse from HTML body (local portal page)
-    # Check if any variable is still None
-    if None in [serial, client_mac, client_ip, userurl, login_url, chap_id, chap_challenge]:
-        try:
-            serial_m = re.search(r'id="serial"\s+value="([^"]*)"', html)
-            client_mac_m = re.search(r'id="client_mac"\s+value="([^"]*)"', html)
-            client_ip_m = re.search(r'id="client_ip"\s+value="([^"]*)"', html)
-            userurl_m = re.search(r'id="userurl"\s+value="([^"]*)"', html)
-            login_url_m = re.search(r'id="login_url"\s+value="([^"]*)"', html)
-            chap_id_m = re.search(r'id="chap-id"\s+value="([^"]*)"', html)
-            chap_challenge_m = re.search(r'id="chap-challenge"\s+value="([^"]*)"', html)
-
-            serial = serial_m.group(1) if serial_m else serial
-            client_mac = client_mac_m.group(1) if client_mac_m else client_mac
-            client_ip = client_ip_m.group(1) if client_ip_m else client_ip
-            userurl = userurl_m.group(1) if userurl_m else userurl
-            login_url = login_url_m.group(1) if login_url_m else login_url
-            chap_id = chap_id_m.group(1) if chap_id_m else chap_id
-            chap_challenge = chap_challenge_m.group(1) if chap_challenge_m else chap_challenge
-            
-            log_message("[*] Extracted variables from HTML body.")
-        except Exception as e:
-            log_message(f"[-] Failed parsing HTML body: {e}")
-
-    # Verify we got everything (Check for None instead of falsy empty strings)
-    if None in [serial, client_mac, client_ip, userurl, login_url, chap_id, chap_challenge]:
-        log_message("[-] Incomplete variables retrieved from gateway. Cannot proceed.")
-        return False, None
-
-    params = {
-        'serial': serial,
-        'client_mac': client_mac,
-        'client_ip': client_ip,
-        'userurl': userurl,
-        'login_url': login_url,
-        'chap_id': chap_id,
-        'chap_challenge': chap_challenge
-    }
-    query_str = urllib.parse.urlencode(params)
-    base_url = login_url if login_url and login_url.startswith("http") else "http://v1.awingconnect.vn/login"
-    login_referer = f"{base_url}?{query_str}"
-    
-    # Establish session and get Cookie
+    """Authenticate through Awing cloud API and register on the local gateway."""
     try:
-        session_req = urllib.request.Request(login_referer, headers={'User-Agent': 'Mozilla/5.0'})
-        with opener.open(session_req, timeout=3) as session_resp:
-            cookie = session_resp.info().get('Set-Cookie', '')
-        cookie_val = re.search(r'ingresscookie=([^;]+)', cookie).group(1) if cookie else None
-    except Exception as e:
-        log_message(f"[-] Failed to establish session with Awing cloud: {e}")
-        return False, None
-
-    if not cookie_val:
-        log_message("[-] ingresscookie was not set by Awing cloud.")
-        return False, None
-
-    # Call VerifyUrl
-    base_domain = urllib.parse.urlparse(base_url).netloc
-    url = f"http://{base_domain}/Home/VerifyUrl"
-    req = urllib.request.Request(
-        url,
-        data=b"",
-        headers={
-            'User-Agent': 'Mozilla/5.0',
-            'Referer': login_referer,
-            'Cookie': f"ingresscookie={cookie_val}"
-        }
-    )
-
-    try:
-        with opener.open(req, timeout=3) as response:
-            res_data = json.loads(response.read().decode('utf-8'))
-    except Exception as e:
-        log_message(f"[-] Error calling Awing VerifyUrl: {e}")
-        return False, None
-
-    # Parse and extract authentication form from VerifyUrl response first
-    form_html = res_data.get('captiveContext', {}).get('contentAuthenForm', '')
-    
-    # If form_html is empty, it means we might have to bypass survey questions (customerRequiredFields)
-    if not form_html:
-        req_fields = res_data.get('captiveContext', {}).get('customerRequiredFields', [])
-        log_message(f"[*] Captive portal requires survey fields: {req_fields}. Submitting automatic survey...")
+        # 1. Fetch current login page parameters from local gateway
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.bind((ip, 0))
+        s.settimeout(3.0)
+        s.connect((gw, 80))
+        req = (
+            "GET /login HTTP/1.1\r\n"
+            f"Host: {gw}\r\n"
+            "User-Agent: Mozilla/5.0\r\n"
+            "Connection: close\r\n\r\n"
+        )
+        s.sendall(req.encode('utf-8'))
+        res = b""
+        while True:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            res += chunk
+        s.close()
+        html = res.decode('utf-8', errors='ignore')
         
-        # Populate customer fields (Auto-bypass survey questions like Gender/Age)
-        cc = res_data.get('captiveContext', {})
-        cust = cc.get('customer')
-        if not cust:
-            cust = {
-                "macAddress": client_mac.replace(":", "-").upper(),
-                "name": None,
-                "phone": None,
-                "gender": True, # True = Male, bypasses gender survey
-                "birthday": {"year": 2000, "month": 1, "day": 1}, # Bypasses year of birth survey
-                "email": None,
-                "device": {
-                    "deviceName": "Windows",
-                    "brandName": "Microsoft",
-                    "deviceCode": "PC",
-                    "os": "Windows NT",
-                    "osValue": 100,
-                    "language": "vi-VN"
-                }
-            }
-            cc['customer'] = cust
-        else:
-            if cust.get('gender') is None:
-                cust['gender'] = True
-            if cust.get('birthday') is None:
-                cust['birthday'] = {"year": 2000, "month": 1, "day": 1}
-
-        # POST to GetCustomer to submit survey and retrieve the authentication form
-        customer_url = f"http://{base_domain}/Content/GetCustomer"
-        customer_req = urllib.request.Request(
-            customer_url,
-            data=json.dumps(res_data).encode('utf-8'),
+        serial_m = re.search(r'id=\"serial\"\s+value=\"([^\"]*)\"', html)
+        client_mac_m = re.search(r'id=\"client_mac\"\s+value=\"([^\"]*)\"', html)
+        client_ip_m = re.search(r'id=\"client_ip\"\s+value=\"([^\"]*)\"', html)
+        login_url_m = re.search(r'id=\"login_url\"\s+value=\"([^\"]*)\"', html)
+        chap_id_raw_m = re.search(r'id=\"chap-id\"\s+value=\"([^\"]*)\"', html)
+        chap_challenge_raw_m = re.search(r'id=\"chap-challenge\"\s+value=\"([^\"]*)\"', html)
+        
+        if not (serial_m and client_mac_m and client_ip_m and login_url_m and chap_id_raw_m and chap_challenge_raw_m):
+            log_message("[-] Could not extract Mikrotik variables from gateway page.")
+            return False, None
+            
+        serial = serial_m.group(1)
+        client_mac = client_mac_m.group(1)
+        client_ip = client_ip_m.group(1)
+        login_url = login_url_m.group(1)
+        chap_id_raw = chap_id_raw_m.group(1)
+        chap_challenge_raw = chap_challenge_raw_m.group(1)
+        
+        chap_id_bytes = parse_octal_string(chap_id_raw)
+        chap_challenge_bytes = parse_octal_string(chap_challenge_raw)
+        
+        # 2. Call Awing Cloud API over default route (WAN)
+        params = {
+            'serial': serial,
+            'client_mac': client_mac,
+            'client_ip': client_ip,
+            'userurl': 'http://www.msftconnecttest.com/redirect',
+            'login_url': login_url,
+            'chap-id': chap_id_bytes.decode('latin1'),
+            'chap-challenge': chap_challenge_bytes.decode('latin1')
+        }
+        
+        query_str = urllib.parse.urlencode(params)
+        login_referer = f'http://v1.awingconnect.vn/login?{query_str}'
+        
+        cj = http.cookiejar.CookieJar()
+        wan_opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
+        
+        resp_ad = wan_opener.open(login_referer, timeout=5)
+        cookies = list(cj)
+        cookie_val = None
+        for c in cookies:
+            if c.name == 'ingresscookie':
+                cookie_val = c.value
+                break
+                
+        if not cookie_val:
+            log_message("[-] ingresscookie was not returned by Awing cloud.")
+            return False, None
+            
+        # Verify URL on Awing
+        v_req = urllib.request.Request(
+            'http://v1.awingconnect.vn/Home/VerifyUrl',
+            data=b'',
             headers={
                 'User-Agent': 'Mozilla/5.0',
-                'Content-Type': 'application/json; charset=utf-8',
                 'Referer': login_referer,
-                'Cookie': f"ingresscookie={cookie_val}"
+                'X-Requested-With': 'XMLHttpRequest',
+                'Cookie': f'ingresscookie={cookie_val}'
             }
         )
-
-        try:
-            with opener.open(customer_req, timeout=3) as customer_response:
-                customer_res_data = json.loads(customer_response.read().decode('utf-8'))
-                form_html = customer_res_data.get('captiveContext', {}).get('contentAuthenForm', '')
-        except Exception as e:
-            log_message(f"[-] Error calling GetCustomer API: {e}")
+        v_resp = wan_opener.open(v_req, timeout=5)
+        res_json = json.loads(v_resp.read().decode('utf-8'))
+        
+        form_html = res_json.get('captiveContext', {}).get('contentAuthenForm', '')
+        if not form_html:
+            log_message("[-] contentAuthenForm was empty in Awing response.")
             return False, None
-
-    if not form_html:
-        log_message("[-] Empty contentAuthenForm returned by gateway/cloud APIs.")
+            
+        username = re.search(r'name=\"username\"\s+value=\"([^\"]*)\"', form_html).group(1)
+        password_plain = re.search(r'name=\"password\"\s+value=\"([^\"]*)\"', form_html).group(1)
+        
+        # 3. Compute local CHAP password
+        to_hash = chap_id_bytes + password_plain.encode('utf-8') + chap_challenge_bytes
+        h = hashlib.md5()
+        h.update(to_hash)
+        chap_password = h.hexdigest()
+        
+        # 4. POST authentication to local gateway
+        success = do_login_local_mikrotik(ip, gw, username, chap_password)
+        if success:
+            # Short sleep to let the gateway process authorization
+            time.sleep(1.0)
+            if is_interface_online(ip, gw):
+                return True, {'username': username, 'password': password_plain}
         return False, None
-
-    try:
-        username = re.search(r'name="username"\s+value="([^"]*)"', form_html).group(1)
-        password = re.search(r'name="password"\s+value="([^"]*)"', form_html).group(1)
-        dst = re.search(r'name="dst"\s+value="([^"]*)"', form_html).group(1)
-        popup = re.search(r'name="popup"\s+value="([^"]*)"', form_html).group(1)
     except Exception as e:
-        log_message(f"[-] Failed parsing authen form fields: {e}")
+        log_message(f"[-] do_login_cloud exception: {e}")
         return False, None
-
-    creds = {'username': username, 'password': password, 'dst': dst, 'popup': popup}
-    
-    post_params = dict(creds)
-    post_data = urllib.parse.urlencode(post_params)
-    post_local_gateway(ip, gw, post_data)
-    
-    success = is_interface_online(ip, gw)
-    return success, creds if success else None
 
 
 def keepalive_worker(stop_event):
-    """Background thread: checks gateway authentication every 500ms. Sets block_event on failure."""
+    """Daemon thread: monitors connected iNet interfaces."""
     while not stop_event.is_set():
         try:
-            # Auto-connect disconnected interfaces
-            ensure_secondary_connections()
-            
             inet_interfaces = get_connected_inet_interfaces()
             for iface in inet_interfaces:
                 ip, gw = get_interface_details(iface)
@@ -482,13 +345,12 @@ def keepalive_worker(stop_event):
                     if not online:
                         block_event.set()
                         break
-        except Exception:
+        except:
             pass
         stop_event.wait(KEEPALIVE_INTERVAL)
 
 
 def main():
-    # Set high process priority if possible
     try:
         import psutil
         p = psutil.Process(os.getpid())
@@ -505,31 +367,27 @@ def main():
         log_message("[*] Another instance is already running. Exiting.")
         sys.exit(0)
 
-    # Load cached credentials from disk
     load_cache()
-    creds_status = f"Loaded cached creds" if creds_cache else "No cached creds (first run)"
+    creds_status = "Loaded cached creds" if creds_cache else "No cached creds"
 
-    # Start keepalive daemon thread
     stop_event = threading.Event()
     keepalive_thread = threading.Thread(target=keepalive_worker, args=(stop_event,), daemon=True)
     keepalive_thread.start()
     atexit.register(lambda: stop_event.set())
     
-    log_message(f"[*] INET Auto-Connect v3.2 (Precise Mode Restored) — Monitoring '{SSID_NAME}'")
-    log_message(f"[*] Keepalive: every 0.5s | Cache: {creds_status}")
-    log_message(f"[*] Re-auth target: ~300ms | Log file: {LOG_FILE}")
+    log_message(f"[*] INET Auto-Connect v4.0 (Safe Mode) — Monitoring '{SSID_NAME}'")
+    log_message(f"[*] Keepalive: every 3s | Cache: {creds_status}")
 
     while True:
         try:
-            # Block here until keepalive detects an outage
-            was_blocked = block_event.wait(timeout=1.5)
+            was_blocked = block_event.wait(timeout=2.0)
             if was_blocked:
                 block_event.clear()
             
             current_time = time.time()
             inet_interfaces = get_connected_inet_interfaces()
 
-            # Clean up stale interfaces
+            # Clean stale states
             for iface in list(interface_states.keys()):
                 if iface not in inet_interfaces:
                     del interface_states[iface]
@@ -553,49 +411,41 @@ def main():
                                 log_message(f"[+] Interface '{iface}' (IP: {ip}) is ONLINE.")
                             state["is_online"] = True
                             state["failures"] = 0
-                            state["next_check"] = current_time + 5
+                            state["next_check"] = current_time + 10  # Check every 10 seconds if online
                         else:
                             state["is_online"] = False
                             log_message(f"[*] Interface '{iface}' blocked. Authenticating...")
 
                             success = False
 
-                            # Path 1: cached creds (~300ms, no cloud API)
-                            if creds_cache:
-                                success = do_login_cached(ip, gw, creds_cache)
-                                if success:
-                                    log_message(f"[+] Authenticated via cached credentials!")
-
-                            # Path 2: fallback to cloud API (~1-3s)
-                            if not success:
-                                log_message(f"[*] Fetching fresh credentials from cloud API...")
-                                success, new_creds = do_login_cloud(ip, gw)
-                                if success:
-                                    log_message(f"[+] Authenticated via cloud API (cached for next time).")
-                                    save_cache(new_creds)
-                                    with cache_lock:
-                                        creds_cache.clear()
-                                        creds_cache.update(new_creds)
-                                else:
-                                    log_message(f"[-] Cloud API authentication failed.")
+                            # Try cloud registration
+                            success, new_creds = do_login_cloud(ip, gw)
+                            if success:
+                                log_message(f"[+] Authenticated via cloud API successfully.")
+                                save_cache(new_creds)
+                                with cache_lock:
+                                    creds_cache.clear()
+                                    creds_cache.update(new_creds)
+                            else:
+                                log_message(f"[-] Cloud API authentication failed.")
 
                             if success:
                                 state["failures"] = 0
                                 state["is_online"] = True
-                                state["next_check"] = current_time + 5
+                                state["next_check"] = current_time + 10
                             else:
                                 state["failures"] += 1
-                                # Gaming Mode: No backoff! Retry instantly (every 1 second)
-                                backoff = 1.0
-                                log_message(f"[-] Retrying in {backoff}s...")
+                                # Safe Mode Backoff: prevent spamming the gateway and getting MAC-banned
+                                backoff = min(15.0 * (2 ** (state["failures"] - 1)), 300.0)
+                                log_message(f"[-] Retrying authentication in {backoff}s...")
                                 state["next_check"] = current_time + backoff
                     else:
-                        state["next_check"] = current_time + 3
+                        state["next_check"] = current_time + 5
 
         except Exception as e:
             log_message(f"[-] Error in daemon loop: {e}")
 
-        time.sleep(0.1)
+        time.sleep(0.5)
 
 
 if __name__ == "__main__":
