@@ -16,7 +16,10 @@ SSID_NAME = "INET - Free WiFi"
 LOCK_PORT = 49999
 
 # Directory paths
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if getattr(sys, 'frozen', False):
+    SCRIPT_DIR = os.path.dirname(sys.executable)
+else:
+    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CACHE_FILE = os.path.join(SCRIPT_DIR, ".creds_cache.json")
 LOG_FILE = os.path.join(SCRIPT_DIR, "auto_connect_inet.log")
 
