@@ -57,7 +57,7 @@ Kéo xuống để làm mới. `Thử lại ngay` bỏ thời gian backoff hiệ
 
 ## Kiểm tra ổn định mạng
 
-Dashboard có mục `Kiểm tra ổn định` độc lập với dịch vụ tự động đăng nhập. Chọn 30, 60 hoặc 120 giây rồi bấm bắt đầu. Android ưu tiên đúng Network của `INET - Free WiFi` mà bộ theo dõi mạng nhận diện; nếu chưa nhận diện được, giao diện ghi rõ đang dùng mạng hoạt động làm dự phòng.
+Dashboard có mục `Kiểm tra ổn định` độc lập với dịch vụ tự động đăng nhập. Chọn 30, 60, 120 giây hoặc `Vô hạn` rồi bấm bắt đầu. Chế độ vô hạn chạy cho tới khi người dùng bấm dừng hoặc đóng màn hình app. Android ưu tiên đúng Network của `INET - Free WiFi` mà bộ theo dõi mạng nhận diện; nếu chưa nhận diện được, giao diện ghi rõ đang dùng mạng hoạt động làm dự phòng.
 
 Mỗi 500 ms, công cụ mở TCP socket bằng `Android Network.socketFactory` tới `1.1.1.1:53`, timeout 1000 ms và luôn đóng socket. Kết quả thời gian thực gồm tỷ lệ mất gói, độ trễ mới nhất/nhỏ nhất/trung bình/lớn nhất, jitter, số lần và thời gian gián đoạn, cùng đánh giá chất lượng. Chỉ một bài kiểm tra được chạy tại một thời điểm và có thể dừng an toàn. Đây là phép đo TCP, không phải kiểm tra băng thông, không dùng proxy và không dùng VPN.
 

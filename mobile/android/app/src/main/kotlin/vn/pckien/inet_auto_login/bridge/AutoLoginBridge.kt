@@ -103,7 +103,10 @@ class AutoLoginBridge(private val activity: Activity) : MethodChannel.MethodCall
         if (Build.VERSION.SDK_INT >= 33) {
             if (!granted(Manifest.permission.NEARBY_WIFI_DEVICES)) add(Manifest.permission.NEARBY_WIFI_DEVICES)
             if (!granted(Manifest.permission.POST_NOTIFICATIONS)) add(Manifest.permission.POST_NOTIFICATIONS)
-        } else if (!granted(Manifest.permission.ACCESS_FINE_LOCATION)) add(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+        if (!granted(Manifest.permission.ACCESS_FINE_LOCATION)) {
+            add(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
     }
     private fun granted(permission: String) = activity.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
 

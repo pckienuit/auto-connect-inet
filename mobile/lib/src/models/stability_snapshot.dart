@@ -51,5 +51,6 @@ class StabilitySnapshot {
   final StabilityRating rating;
   final String? error;
   final String networkLabel;
+  bool get isUnlimited => durationMs == 0;
   double get progress => durationMs <= 0 ? 0 : (elapsedMs / durationMs).clamp(0.0, 1.0).toDouble();
 }

@@ -24,4 +24,14 @@ void main() {
     expect(value.networkLabel, 'Chưa xác định mạng');
     expect(value.progress, 0);
   });
+
+  test('zero duration represents an unlimited test', () {
+    final value = StabilitySnapshot.fromMap(const {
+      'running': true,
+      'elapsedMs': 90000,
+      'durationMs': 0,
+    });
+    expect(value.isUnlimited, isTrue);
+    expect(value.progress, 0);
+  });
 }

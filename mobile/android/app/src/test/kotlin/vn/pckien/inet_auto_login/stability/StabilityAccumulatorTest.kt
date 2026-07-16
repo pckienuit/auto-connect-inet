@@ -4,6 +4,12 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class StabilityAccumulatorTest {
+    @Test fun `zero duration selects unlimited mode`() {
+        assertEquals(0, StabilityTestEngine.normalizeDurationSeconds(0))
+        assertEquals(1, StabilityTestEngine.normalizeDurationSeconds(-5))
+        assertEquals(600, StabilityTestEngine.normalizeDurationSeconds(900))
+    }
+
     @Test fun `calculates loss latency and jitter`() {
         val subject = StabilityAccumulator()
         subject.record(10.0, 0); subject.record(30.0, 500); subject.record(null, 1_000)

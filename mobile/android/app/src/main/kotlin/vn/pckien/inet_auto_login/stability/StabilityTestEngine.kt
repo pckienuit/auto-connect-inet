@@ -17,6 +17,12 @@ class StabilityTestEngine(context: Context) {
         const val TIMEOUT_MS = 1_000
         private const val HOST = "1.1.1.1"
         private const val PORT = 53
+
+        fun normalizeDurationSeconds(value: Int): Int = when {
+            value == 0 -> 0
+            value < 0 -> 1
+            else -> value.coerceAtMost(600)
+        }
     }
 
     private val appContext = context.applicationContext
@@ -32,7 +38,7 @@ class StabilityTestEngine(context: Context) {
     @Synchronized
     fun start(durationSeconds: Int = DEFAULT_DURATION_SECONDS): Boolean {
         if (job?.isActive == true) return false
-        val duration = durationSeconds.coerceIn(1, 600)
+        val duration = normalizeDurationSeconds(durationSeconds)
         job = scope.launch { run(duration) }
         return true
     }
@@ -64,22 +70,27 @@ class StabilityTestEngine(context: Context) {
         val durationMs = durationSeconds * 1_000L
         emit(true, 0, durationMs, accumulator, label, null)
         try {
-            while (currentCoroutineContext().isActive && SystemClock.elapsedRealtime() - startedAt < durationMs) {
+            while (currentCoroutineContext().isActive && (durationMs == 0L || SystemClock.elapsedRealtime() - startedAt < durationMs)) {
                 val iterationAt = SystemClock.elapsedRealtime()
                 val latency = if (network == null) null else connect(network)
                 accumulator.record(latency, SystemClock.elapsedRealtime())
                 emit(true, SystemClock.elapsedRealtime() - startedAt, durationMs, accumulator, label, null)
                 delay((INTERVAL_MS - (SystemClock.elapsedRealtime() - iterationAt)).coerceAtLeast(0))
             }
-            emit(false, (SystemClock.elapsedRealtime() - startedAt).coerceAtMost(durationMs), durationMs, accumulator, label, null)
+            emit(false, elapsedForEvent(startedAt, durationMs), durationMs, accumulator, label, null)
         } catch (_: CancellationException) {
-            emit(false, (SystemClock.elapsedRealtime() - startedAt).coerceAtMost(durationMs), durationMs, accumulator, label, null)
+            emit(false, elapsedForEvent(startedAt, durationMs), durationMs, accumulator, label, null)
         } catch (error: Exception) {
             emit(false, SystemClock.elapsedRealtime() - startedAt, durationMs, accumulator, label, error.message ?: error.javaClass.simpleName)
         } finally {
             runningSocket.getAndSet(null)?.closeQuietly()
             repository.stop()
         }
+    }
+
+    private fun elapsedForEvent(startedAt: Long, durationMs: Long): Long {
+        val elapsed = SystemClock.elapsedRealtime() - startedAt
+        return if (durationMs == 0L) elapsed else elapsed.coerceAtMost(durationMs)
     }
 
     private fun connect(network: Network): Double? {

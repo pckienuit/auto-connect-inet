@@ -12,3 +12,8 @@ __pycache__/
 *.log
 *.txt
 *.html
+
+.agent/
+.codegraph/
+.hermes/
+
