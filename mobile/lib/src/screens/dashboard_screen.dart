@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import '../models/daemon_snapshot.dart';
 import '../platform/auto_login_platform.dart';
 import '../widgets/status_card.dart';
+import '../widgets/stability_test_section.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key, required this.platform});
@@ -124,7 +125,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ? const Center(child: CircularProgressIndicator())
           : RefreshIndicator(
               onRefresh: _refresh,
-              child: ListView(padding: const EdgeInsets.all(12), children: [
+              child: ListView(key: const Key('dashboardList'), padding: const EdgeInsets.all(12), children: [
                 Card(child: SwitchListTile(
                   key: const Key('masterSwitch'),
                   title: const Text('Tự động đăng nhập', style: TextStyle(fontWeight: FontWeight.bold)),
@@ -149,6 +150,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   OutlinedButton.icon(onPressed: () async { try { await widget.platform.openBatterySettings(); } catch (e) { _showError(e); } }, icon: const Icon(Icons.battery_saver), label: const Text('Cài đặt pin')),
                   OutlinedButton.icon(onPressed: _refresh, icon: const Icon(Icons.sync), label: const Text('Làm mới')),
                 ])),
+                StabilityTestSection(platform: widget.platform),
                 Card(child: ExpansionTile(
                   title: const Text('Nhật ký gần đây'),
                   subtitle: Text('${_logs.length} dòng, đã loại dữ liệu nhạy cảm'),

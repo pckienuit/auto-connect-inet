@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:inet_auto_login/app.dart';
 import 'package:inet_auto_login/src/models/daemon_snapshot.dart';
+import 'package:inet_auto_login/src/models/stability_snapshot.dart';
 import 'package:inet_auto_login/src/platform/auto_login_platform.dart';
 
 class FakePlatform implements AutoLoginApi {
@@ -19,6 +20,11 @@ class FakePlatform implements AutoLoginApi {
   @override Future<void> retryNow() async { retries++; }
   @override Future<List<String>> getRecentLogs({int limit = 200}) async => ['safe log'];
   @override Future<void> openBatterySettings() async {}
+  final stabilityController = StreamController<StabilitySnapshot>.broadcast();
+  int stabilityStarts = 0, stabilityStops = 0, stabilityDuration = 0;
+  @override Stream<StabilitySnapshot> get stabilitySnapshots => stabilityController.stream;
+  @override Future<void> startStabilityTest({int durationSeconds = 60}) async { stabilityStarts++; stabilityDuration = durationSeconds; }
+  @override Future<void> stopStabilityTest() async { stabilityStops++; }
 }
 
 DaemonSnapshot state(DaemonState value, {bool enabled = true, DateTime? retryAt}) => DaemonSnapshot(
@@ -52,6 +58,32 @@ void main() {
     await tester.tap(find.text('Tiếp tục')); await tester.pumpAndSettle();
     expect(fake.starts, 0);
     expect(find.textContaining('Chưa cấp đủ quyền'), findsOneWidget);
+  });
+
+  testWidgets('stability section starts selected duration and renders metrics', (tester) async {
+    final fake = FakePlatform();
+    await tester.pumpWidget(InetAutoLoginApp(platform: fake)); await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.byKey(const Key('stabilityToggle')),
+      300,
+      scrollable: find.descendant(
+        of: find.byKey(const Key('dashboardList')),
+        matching: find.byType(Scrollable),
+      ).first,
+    );
+    await tester.tap(find.text('120 giây')); await tester.pump();
+    await tester.tap(find.byKey(const Key('stabilityToggle'))); await tester.pump();
+    expect(fake.stabilityStarts, 1); expect(fake.stabilityDuration, 120);
+    fake.stabilityController.add(const StabilitySnapshot(
+      running: true, elapsedMs: 1500, durationMs: 120000, sent: 3, received: 2,
+      lossPercent: 33.3, latestLatencyMs: 20, minLatencyMs: 10,
+      averageLatencyMs: 15, maxLatencyMs: 20, jitterMs: 10,
+      outageCount: 1, currentOutageMs: 0, maxOutageMs: 500,
+      rating: StabilityRating.jittery, networkLabel: 'Mạng đang hoạt động (dự phòng)',
+    ));
+    await tester.pump();
+    expect(find.text('Đánh giá: Dao động'), findsOneWidget);
+    expect(find.text('Mạng đang hoạt động (dự phòng)'), findsOneWidget);
   });
 
   testWidgets('backoff countdown never displays negative number', (tester) async {
