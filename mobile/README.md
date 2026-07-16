@@ -1,87 +1,165 @@
 # INET Auto Login cho Android
 
-Ứng dụng Flutter điều khiển dịch vụ nền Android để theo dõi `INET - Free WiFi` và đăng nhập captive portal AWING/MikroTik. Daemon chạy bằng foreground service, độc lập với màn hình Flutter.
+Ứng dụng Flutter điều khiển Kotlin foreground service để theo dõi `INET - Free WiFi` và duy trì phiên captive portal AWING/MikroTik. Service hoạt động độc lập với màn hình Flutter, không dùng VPN, proxy hoặc root.
 
 ## Yêu cầu
 
-- Android 8.0 trở lên.
-- Flutter SDK và Android SDK để tự build.
-- Thiết bị đã kết nối vật lý với `INET - Free WiFi`.
+- Android 8.0 (API 26) trở lên.
+- Thiết bị đã kết nối vào `INET - Free WiFi`.
+- Bật dịch vụ Vị trí của Android để hệ thống cho phép đọc SSID.
+- Flutter SDK và Android SDK nếu build từ mã nguồn.
 
-Ứng dụng không tự bật WiFi, không tự chọn hoặc kết nối WiFi, không dùng VPN và không cần root.
+Ứng dụng không tự bật WiFi và không tự kết nối/chuyển SSID.
 
-## Build APK
+## Chạy khi phát triển
 
-Từ thư mục `mobile`:
+Thư mục này là root của Flutter project:
 
-```bash
+```powershell
+cd D:\auto-connect-inet\mobile
 flutter pub get
-flutter analyze
-flutter test
+flutter run
+```
+
+Chọn thiết bị cụ thể khi có cả emulator và máy USB:
+
+```powershell
+flutter devices
+flutter run -d <device-id>
+```
+
+Nếu Flutter chưa nằm trong `PATH`:
+
+```powershell
+C:\tools\flutter\bin\flutter.bat run -d <device-id>
+```
+
+## Build và cài APK
+
+### Debug
+
+```powershell
 flutter build apk --debug
+adb install -r build\app\outputs\flutter-apk\app-debug.apk
 ```
 
-APK debug nằm tại `build/app/outputs/flutter-apk/app-debug.apk`. Cài qua ADB:
+Bản debug chứa runtime phục vụ phát triển nên dung lượng lớn.
 
-```bash
-adb install -r build/app/outputs/flutter-apk/app-debug.apk
+### Release theo kiến trúc CPU
+
+```powershell
+flutter build apk --release --split-per-abi
 ```
 
-Muốn phát hành nội bộ, cấu hình khóa ký Android riêng và chạy `flutter build apk --release`. Không đưa keystore hoặc mật khẩu ký vào Git.
+| Thiết bị | APK |
+| --- | --- |
+| Hầu hết điện thoại Android hiện nay | `build/app/outputs/flutter-apk/app-arm64-v8a-release.apk` |
+| Điện thoại ARM 32-bit cũ | `build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk` |
+| Emulator/thiết bị x86-64 | `build/app/outputs/flutter-apk/app-x86_64-release.apk` |
 
-## Cấp quyền và bật dịch vụ
+Cấu hình hiện tại ký release bằng debug key để cài thử nội bộ. Trước khi phát hành, phải cấu hình release keystore riêng và tuyệt đối không commit keystore hoặc mật khẩu.
 
-1. Mở ứng dụng và bật `Tự động đăng nhập`.
-2. Đọc giải thích rồi chấp nhận hộp thoại Android.
-3. Android 13 trở lên cần quyền thiết bị WiFi ở gần và thông báo.
-4. Android 12 trở xuống cần quyền vị trí để Android cho phép đọc SSID.
-5. Nếu SSID vẫn không đọc được, bật dịch vụ Vị trí của thiết bị rồi thử lại.
-6. Giữ thông báo foreground của ứng dụng được phép hiển thị.
+## Quyền Android
 
-Ứng dụng chỉ khởi động daemon sau khi các quyền bắt buộc đã được cấp. Nút `Cài đặt pin` mở trang thông tin ứng dụng để người dùng tự điều chỉnh mức sử dụng pin.
+Khi bật `Tự động đăng nhập`, ứng dụng yêu cầu:
 
-## Trạng thái
+- `ACCESS_FINE_LOCATION`: Android coi SSID là thông tin nhạy cảm vị trí, kể cả trên Android mới.
+- `NEARBY_WIFI_DEVICES`: quyền truy cập thông tin WiFi trên Android 13+.
+- `POST_NOTIFICATIONS`: hiển thị foreground service trên Android 13+.
 
-- `Đã tắt`: daemon không chạy.
+Android 12+ mặc định che SSID trong `NetworkCapabilities`. App dùng callback có `FLAG_INCLUDE_LOCATION_INFO` và chỉ xử lý dữ liệu capability/link properties của chính callback. Nếu từ chối quyền vị trí hoặc tắt Location, dashboard có thể hiện `Chưa có` dù thanh trạng thái vẫn báo đang nối WiFi.
+
+## Luồng hoạt động
+
+```text
+Android NetworkCallback
+        │
+        ├─ SSID không phải INET ──► WAITING_WIFI
+        │
+        └─ INET - Free WiFi
+                 │
+                 ├─ kiểm tra gateway /status
+                 ├─ dùng credential trong Android Keystore nếu cần
+                 ├─ lấy phiên mới qua AWING nếu cache không hợp lệ
+                 └─ ONLINE hoặc BACKOFF rồi retry
+```
+
+Request gateway luôn được bind vào đúng `android.net.Network`, tránh đi nhầm qua mobile data hoặc VPN.
+
+## Trạng thái trên dashboard
+
+- `Đã tắt`: service không chạy.
 - `Đang khởi động`: foreground service đang chuẩn bị.
-- `Đang chờ cấp quyền`: Android chưa cho phép đọc WiFi hoặc hiển thị thông báo.
-- `Đang chờ WiFi INET`: chưa kết nối đúng SSID mục tiêu.
-- `Đang kiểm tra kết nối`: đang hỏi gateway về phiên đăng nhập.
-- `Đang đăng nhập bằng dữ liệu đã lưu`: đang thử credential được mã hóa trong Android Keystore.
-- `Đang đăng nhập qua AWING`: đang lấy credential mới.
+- `Đang chờ cấp quyền`: thiếu quyền Android bắt buộc.
+- `Đang chờ WiFi INET`: chưa nhận diện đúng SSID mục tiêu.
+- `Đang kiểm tra kết nối`: đang hỏi gateway về phiên hiện tại.
+- `Đang đăng nhập bằng dữ liệu đã lưu`: thử credential trong Keystore.
+- `Đang đăng nhập qua AWING`: lấy credential/phiên mới.
 - `Đã đăng nhập`: gateway xác nhận phiên hợp lệ.
-- `Đang chờ thử lại`: lỗi tạm thời và daemon đang backoff.
-- `Có lỗi`: lỗi cần xem chi tiết hoặc nhật ký.
+- `Đang chờ thử lại`: lỗi tạm thời và đang backoff.
+- `Có lỗi`: xem thông tin chi tiết và nhật ký.
 
-Kéo xuống để làm mới. `Thử lại ngay` bỏ thời gian backoff hiện tại. Mục `Nhật ký gần đây` hiển thị tối đa số dòng giới hạn và logger đã che dữ liệu nhạy cảm.
+`Thử lại ngay` bỏ thời gian backoff hiện tại. Kéo dashboard xuống hoặc bấm `Làm mới` để đọc snapshot mới nhất.
 
 ## Kiểm tra ổn định mạng
 
-Dashboard có mục `Kiểm tra ổn định` độc lập với dịch vụ tự động đăng nhập. Chọn 30, 60, 120 giây hoặc `Vô hạn` rồi bấm bắt đầu. Chế độ vô hạn chạy cho tới khi người dùng bấm dừng hoặc đóng màn hình app. Android ưu tiên đúng Network của `INET - Free WiFi` mà bộ theo dõi mạng nhận diện; nếu chưa nhận diện được, giao diện ghi rõ đang dùng mạng hoạt động làm dự phòng.
+Chọn 30, 60, 120 giây hoặc `Vô hạn`. Công cụ mở TCP socket qua đúng Android `Network` tới `1.1.1.1:53`, ghi nhận:
 
-Mỗi 500 ms, công cụ mở TCP socket bằng `Android Network.socketFactory` tới `1.1.1.1:53`, timeout 1000 ms và luôn đóng socket. Kết quả thời gian thực gồm tỷ lệ mất gói, độ trễ mới nhất/nhỏ nhất/trung bình/lớn nhất, jitter, số lần và thời gian gián đoạn, cùng đánh giá chất lượng. Chỉ một bài kiểm tra được chạy tại một thời điểm và có thể dừng an toàn. Đây là phép đo TCP, không phải kiểm tra băng thông, không dùng proxy và không dùng VPN.
+- packet loss;
+- latency mới nhất, nhỏ nhất, trung bình và lớn nhất;
+- jitter;
+- số lần, thời gian hiện tại và thời gian dài nhất của gián đoạn.
 
-## Pin, Auto Start và OEM
+Đây là phép đo độ ổn định TCP, không phải kiểm tra băng thông. Chế độ vô hạn chạy đến khi người dùng dừng hoặc đóng màn hình app.
 
-Android chuẩn có thể khôi phục daemon sau reboot ở mức best effort. Một số hãng áp giới hạn riêng:
+## Chạy nền và OEM
 
+Android chuẩn có thể khôi phục service sau reboot ở mức best effort. Một số hãng cần cấu hình thêm:
+
+- Oppo, Realme, OnePlus: bật Auto launch và Background activity.
 - Xiaomi, Redmi, Poco: bật Auto Start và đặt Battery saver thành No restrictions.
-- Oppo, Realme, OnePlus: cho phép Auto launch và Background activity.
 - Vivo: bật Autostart và High background power consumption.
-- Samsung: bỏ ứng dụng khỏi Sleeping apps hoặc Deep sleeping apps, có thể thêm vào Never sleeping apps.
+- Samsung: đưa ứng dụng ra khỏi Sleeping/Deep sleeping apps.
 
-Tên menu thay đổi theo phiên bản hệ điều hành. Luôn giữ notification foreground. Vuốt ứng dụng khỏi màn hình gần đây thường không dừng service, nhưng OEM có thể xử lý khác.
+`Buộc dừng` trong Settings chặn cả service và boot receiver đến khi người dùng mở lại ứng dụng. Không ứng dụng nào có thể tự vượt qua giới hạn này.
 
-## Force Stop và giới hạn nền
-
-`Buộc dừng` trong Settings là lệnh mạnh của Android. Sau Force Stop, service và boot receiver không được chạy lại cho đến khi người dùng mở ứng dụng thủ công. Ứng dụng không thể vượt qua giới hạn này. Reboot recovery cũng là best effort và phụ thuộc chính sách OEM.
-
-## Bảo mật và giới hạn giao thức
-
-Captive portal hiện yêu cầu HTTP cleartext tới gateway và một phần luồng AWING. Lưu lượng HTTP có thể bị quan sát hoặc sửa đổi bởi bên kiểm soát mạng. Ứng dụng giảm rủi ro bằng cách bind request vào đúng Android Network, không log username, password, cookie hoặc CHAP material, không export service điều khiển, và lưu credential cache bằng Android Keystore.
-
-Không xem nhật ký là bằng chứng tuyệt đối rằng mạng an toàn. Ứng dụng chỉ hỗ trợ portal AWING/MikroTik hiện tại, không tự kết nối WiFi vật lý, không đảm bảo chạy sau Force Stop và không thể khắc phục portal đổi schema nếu chưa cập nhật ứng dụng.
+Sau khi cài đè APK bằng `adb install -r`, Android có thể dừng foreground service cũ. Hãy mở lại app và tắt/bật công tắc một lần nếu dashboard chỉ đứng ở `Đang khởi động`.
 
 ## Chẩn đoán
 
-Mở dashboard để xem SSID, gateway, IP cục bộ, lần kiểm tra, lần đăng nhập, thời gian retry và nhật ký đã redact. Khi báo sai WiFi hoặc SSID không xác định, kiểm tra quyền, Location và kết nối WiFi trước. Khi OEM dừng nền, bật Auto Start, bỏ giới hạn pin rồi mở lại ứng dụng.
+### Không nhận diện được WiFi hiện tại
+
+1. Kiểm tra đang nối đúng `INET - Free WiFi`.
+2. Bật Location của thiết bị.
+3. Cấp quyền Vị trí chính xác và Thiết bị WiFi ở gần cho app.
+4. Tắt/bật lại `Tự động đăng nhập`.
+5. Kiểm tra SSID, gateway, IP cục bộ và `Nhật ký gần đây` trên dashboard.
+
+Qua ADB:
+
+```powershell
+adb devices -l
+adb shell dumpsys wifi
+adb shell dumpsys activity services vn.pckien.inet_auto_login
+```
+
+### Service bị OEM dừng
+
+Bật Auto Start, bỏ giới hạn pin, giữ thông báo foreground và mở app lại. Vuốt app khỏi Recent thường không dừng service trên Android chuẩn, nhưng hành vi OEM có thể khác.
+
+## Kiểm thử
+
+```powershell
+flutter analyze
+flutter test
+.\android\gradlew.bat -p android testDebugUnitTest
+```
+
+Các test bao phủ model/bridge Flutter, layout 320dp và landscape, parser/authentication, backoff, redaction log, network selector và stability accumulator.
+
+## Bảo mật
+
+- Credential cache được lưu bằng Android Keystore.
+- Logger che username, password, cookie, CHAP material, MAC và IPv4.
+- Service không export ra ứng dụng khác.
+- Gateway/AWING có phần lưu lượng HTTP cleartext; không coi kết nối này tương đương HTTPS end-to-end.

@@ -28,12 +28,18 @@ class StabilitySnapshot {
     final ratingName = '${map['rating'] ?? 'noConnection'}';
     return StabilitySnapshot(
       running: map['running'] == true,
-      elapsedMs: integer('elapsedMs'), durationMs: integer('durationMs'),
-      sent: integer('sent'), received: integer('received'),
-      lossPercent: decimal('lossPercent'), latestLatencyMs: nullableDecimal('latestLatencyMs'),
-      minLatencyMs: nullableDecimal('minLatencyMs'), averageLatencyMs: nullableDecimal('averageLatencyMs'),
-      maxLatencyMs: nullableDecimal('maxLatencyMs'), jitterMs: decimal('jitterMs'),
-      outageCount: integer('outageCount'), currentOutageMs: integer('currentOutageMs'),
+      elapsedMs: integer('elapsedMs'),
+      durationMs: integer('durationMs'),
+      sent: integer('sent'),
+      received: integer('received'),
+      lossPercent: decimal('lossPercent'),
+      latestLatencyMs: nullableDecimal('latestLatencyMs'),
+      minLatencyMs: nullableDecimal('minLatencyMs'),
+      averageLatencyMs: nullableDecimal('averageLatencyMs'),
+      maxLatencyMs: nullableDecimal('maxLatencyMs'),
+      jitterMs: decimal('jitterMs'),
+      outageCount: integer('outageCount'),
+      currentOutageMs: integer('currentOutageMs'),
       maxOutageMs: integer('maxOutageMs'),
       rating: StabilityRating.values.firstWhere(
         (value) => value.name == ratingName,
@@ -45,12 +51,19 @@ class StabilitySnapshot {
   }
 
   final bool running;
-  final int elapsedMs, durationMs, sent, received, outageCount, currentOutageMs, maxOutageMs;
+  final int elapsedMs,
+      durationMs,
+      sent,
+      received,
+      outageCount,
+      currentOutageMs,
+      maxOutageMs;
   final double lossPercent, jitterMs;
   final double? latestLatencyMs, minLatencyMs, averageLatencyMs, maxLatencyMs;
   final StabilityRating rating;
   final String? error;
   final String networkLabel;
   bool get isUnlimited => durationMs == 0;
-  double get progress => durationMs <= 0 ? 0 : (elapsedMs / durationMs).clamp(0.0, 1.0).toDouble();
+  double get progress =>
+      durationMs <= 0 ? 0 : (elapsedMs / durationMs).clamp(0.0, 1.0).toDouble();
 }

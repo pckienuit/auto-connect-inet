@@ -46,18 +46,18 @@ class DaemonSnapshot {
   });
 
   const DaemonSnapshot.disabled()
-      : serviceEnabled = false,
-        state = DaemonState.disabled,
-        stateMessage = '',
-        ssid = null,
-        gatewayIp = null,
-        localIp = null,
-        isWifiTarget = false,
-        lastCheckAt = null,
-        lastAuthAt = null,
-        retryAt = null,
-        failureCount = 0,
-        lastError = null;
+    : serviceEnabled = false,
+      state = DaemonState.disabled,
+      stateMessage = '',
+      ssid = null,
+      gatewayIp = null,
+      localIp = null,
+      isWifiTarget = false,
+      lastCheckAt = null,
+      lastAuthAt = null,
+      retryAt = null,
+      failureCount = 0,
+      lastError = null;
 
   factory DaemonSnapshot.fromMap(Map<Object?, Object?> map) {
     String? text(String key) {

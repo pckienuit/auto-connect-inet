@@ -6,7 +6,8 @@ import '../models/stability_snapshot.dart';
 class PermissionResult {
   const PermissionResult({required this.granted, required this.missing});
 
-  factory PermissionResult.fromMap(Map<Object?, Object?> map) => PermissionResult(
+  factory PermissionResult.fromMap(Map<Object?, Object?> map) =>
+      PermissionResult(
         granted: map['granted'] == true,
         missing: (map['missing'] as List<Object?>? ?? const [])
             .map((value) => '$value')
@@ -32,17 +33,26 @@ abstract interface class AutoLoginApi {
 }
 
 class AutoLoginPlatform implements AutoLoginApi {
-  AutoLoginPlatform({MethodChannel? methodChannel, EventChannel? eventChannel,
-    MethodChannel? stabilityMethodChannel, EventChannel? stabilityEventChannel})
-      : _method = methodChannel ?? const MethodChannel(methodChannelName),
-        _event = eventChannel ?? const EventChannel(eventChannelName),
-        _stabilityMethod = stabilityMethodChannel ?? const MethodChannel(stabilityMethodChannelName),
-        _stabilityEvent = stabilityEventChannel ?? const EventChannel(stabilityEventChannelName);
+  AutoLoginPlatform({
+    MethodChannel? methodChannel,
+    EventChannel? eventChannel,
+    MethodChannel? stabilityMethodChannel,
+    EventChannel? stabilityEventChannel,
+  }) : _method = methodChannel ?? const MethodChannel(methodChannelName),
+       _event = eventChannel ?? const EventChannel(eventChannelName),
+       _stabilityMethod =
+           stabilityMethodChannel ??
+           const MethodChannel(stabilityMethodChannelName),
+       _stabilityEvent =
+           stabilityEventChannel ??
+           const EventChannel(stabilityEventChannelName);
 
   static const methodChannelName = 'vn.pckien.inet_auto_login/control';
   static const eventChannelName = 'vn.pckien.inet_auto_login/events';
-  static const stabilityMethodChannelName = 'vn.pckien.inet_auto_login/stability_control';
-  static const stabilityEventChannelName = 'vn.pckien.inet_auto_login/stability';
+  static const stabilityMethodChannelName =
+      'vn.pckien.inet_auto_login/stability_control';
+  static const stabilityEventChannelName =
+      'vn.pckien.inet_auto_login/stability';
   final MethodChannel _method;
   final EventChannel _event;
   final MethodChannel _stabilityMethod;
@@ -52,20 +62,29 @@ class AutoLoginPlatform implements AutoLoginApi {
   Stream<StabilitySnapshot> get stabilitySnapshots => _stabilityEvent
       .receiveBroadcastStream()
       .where((event) => event is Map)
-      .map((event) => StabilitySnapshot.fromMap((event as Map).cast<Object?, Object?>()));
+      .map(
+        (event) =>
+            StabilitySnapshot.fromMap((event as Map).cast<Object?, Object?>()),
+      );
 
   @override
-  Future<void> startStabilityTest({int durationSeconds = 60}) => _stabilityMethod
-      .invokeMethod<void>('startStabilityTest', {'durationSeconds': durationSeconds});
+  Future<void> startStabilityTest({int durationSeconds = 60}) =>
+      _stabilityMethod.invokeMethod<void>('startStabilityTest', {
+        'durationSeconds': durationSeconds,
+      });
 
   @override
-  Future<void> stopStabilityTest() => _stabilityMethod.invokeMethod<void>('stopStabilityTest');
+  Future<void> stopStabilityTest() =>
+      _stabilityMethod.invokeMethod<void>('stopStabilityTest');
 
   @override
   Stream<DaemonSnapshot> get snapshots => _event
       .receiveBroadcastStream()
       .where((event) => event is Map)
-      .map((event) => DaemonSnapshot.fromMap((event as Map).cast<Object?, Object?>()));
+      .map(
+        (event) =>
+            DaemonSnapshot.fromMap((event as Map).cast<Object?, Object?>()),
+      );
 
   @override
   Future<DaemonSnapshot> getSnapshot() async {
@@ -75,7 +94,9 @@ class AutoLoginPlatform implements AutoLoginApi {
 
   @override
   Future<PermissionResult> requestPermissions() async {
-    final map = await _method.invokeMapMethod<Object?, Object?>('requestPermissions');
+    final map = await _method.invokeMapMethod<Object?, Object?>(
+      'requestPermissions',
+    );
     return PermissionResult.fromMap(map ?? const {});
   }
 
@@ -86,11 +107,14 @@ class AutoLoginPlatform implements AutoLoginApi {
   @override
   Future<void> retryNow() => _method.invokeMethod<void>('retryNow');
   @override
-  Future<void> openBatterySettings() => _method.invokeMethod<void>('openBatterySettings');
+  Future<void> openBatterySettings() =>
+      _method.invokeMethod<void>('openBatterySettings');
 
   @override
   Future<List<String>> getRecentLogs({int limit = 200}) async {
-    final lines = await _method.invokeListMethod<Object?>('getRecentLogs', {'limit': limit});
+    final lines = await _method.invokeListMethod<Object?>('getRecentLogs', {
+      'limit': limit,
+    });
     return (lines ?? const []).map((line) => '$line').toList(growable: false);
   }
 }

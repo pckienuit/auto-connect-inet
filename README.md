@@ -1,115 +1,119 @@
 # Auto-Connect INET - Free WiFi
 
-Công cụ tự động đăng nhập và duy trì kết nối WiFi **INET - Free WiFi** (captive portal AWING) trên Windows 10/11 — không cần mở trình duyệt, re-auth trong **~0.3 giây**.
+Bộ công cụ tự động duy trì phiên đăng nhập captive portal cho WiFi `INET - Free WiFi`. Repo gồm hai ứng dụng độc lập:
 
-## ✨ Tính năng
+| Nền tảng | Mã nguồn | Cách hoạt động |
+| --- | --- | --- |
+| Windows 10/11 | `auto_connect_inet.py` | Tiến trình nền theo dõi card WiFi, kiểm tra gateway và đăng nhập lại khi cần. |
+| Android 8.0+ | [`mobile/`](mobile/README.md) | Flutter UI điều khiển Kotlin foreground service, bind request vào đúng Android `Network`. |
 
-- **Auto-connect disconnected adapter:** Tự động phát hiện và kết nối lại các card mạng phụ (như USB WiFi) vào SSID `"INET - Free WiFi"` nếu bị ngắt kết nối hoặc lệch SSID.
-- **Local Gate-check (Immune Mode):** Giải quyết triệt để lỗi xung đột định tuyến (Routing Metric) và lỗi bị VPN/Tailscale chặn/định tuyến nhầm gói tin kiểm tra mạng. Thay vì check ping WAN (`detectportal`), script V3.2 sẽ trực tiếp kiểm tra trạng thái session cục bộ qua cổng chào (`/status` và `/login`) của router. Nhờ đó, script hoạt động chính xác 100% ngay cả khi đang bật VPN/Tailscale.
-- **Bypass Captive Cloud & Survey:** Tự động phát hiện yêu cầu khảo sát tuổi/giới tính và bóc tách địa chỉ Endpoint API động (không fix cứng domain), đảm bảo hoạt động xuyên suốt kể cả khi INET đổi hạ tầng.
-- **Bound HTTP Requests:** Vượt lỗi Windows OS Multi-NIC (chặn đường truyền khi cắm 2 card Wi-Fi), script ép toàn bộ quá trình nhận/gửi session đi đúng IP nội bộ thay vì bị drop bởi Metric cao.
-- **Keepalive 0.5s (Gaming Mode):** Thread riêng kiểm tra trạng thái cổng chào mỗi 0.5 giây (timeout 300ms) → phát hiện mất mạng cực nhanh, re-auth tức thì để không gây khựng mạng khi chơi game đối kháng.
+Ứng dụng không thay thế trình quản lý WiFi của hệ điều hành. Thiết bị vẫn phải kết nối vào `INET - Free WiFi` trước khi công cụ có thể kiểm tra hoặc đăng nhập captive portal.
 
-- **Cached credentials:** Lưu username/password ra file `.creds_cache.json` → re-auth trực tiếp vào gateway cục bộ (~0.3s) không cần gọi cloud API.
-- **Hỗ trợ ghi Log:** Xuất nhật ký hoạt động trực tiếp ra file `auto_connect_inet.log` để dễ dàng kiểm tra/debug khi chạy ngầm.
-- **Tự động chạy khi bật máy:** Registry HKCU\Run — không cần admin, không dùng Scheduled Task.
-- **Chạy ẩn hoàn toàn:** file `.exe` dạng `--noconsole`, RAM ~7MB.
-- **Zero Backoff:** Khi chơi game, nếu auth thực sự lỗi (do nhà mạng), script sẽ liên tục thử lại sau mỗi 1 giây thay vì phạt đợi tăng dần, giúp khôi phục mạng nhanh nhất có thể.
+## Tính năng chính
 
-## 📂 Cấu trúc
+### Windows
 
-```
-├── auto_connect_inet.py    # Source Python v3.2 (Precise Gaming Mode)
-├── auto_connect_inet.exe   # Compiled binary (chạy ngầm)
-├── install.bat             # Cài đặt Registry startup + launch nhanh (Không cần Admin)
-├── test_stability.py       # Đo ping jitter, loss và chấm điểm đấu game
-├── test_download.py        # Test băng thông
-├── README.md
-└── .gitignore
-```
+- Theo dõi nhiều card mạng và nhận diện đúng SSID mục tiêu.
+- Kiểm tra phiên trực tiếp qua `/status` và `/login` của gateway thay vì dựa vào ping WAN.
+- Bind socket vào IP của card WiFi để tránh sai route khi máy có nhiều NIC, VPN hoặc Tailscale.
+- Lưu credential cache cục bộ để rút ngắn lần đăng nhập tiếp theo.
+- Ghi log vào `auto_connect_inet.log` và ngăn chạy nhiều instance bằng local lock.
+- Có thể đăng ký chạy cùng Windows qua `HKCU\Run`, không cần quyền Administrator.
 
-## 🚀 Cài đặt
+### Android
 
-### Nhanh: Chạy `install_v2.bat` (nhấp đúp)
-→ Tự đăng ký Registry + launch ngay.
+- Foreground service tiếp tục theo dõi mạng khi đóng màn hình Flutter.
+- Nhận diện SSID, IP cục bộ và gateway trên Android 8–15.
+- Đăng nhập bằng cache mã hóa trong Android Keystore hoặc lấy phiên mới qua AWING.
+- Dashboard hiển thị trạng thái, lịch retry, log đã che dữ liệu nhạy cảm và công cụ đo độ ổn định TCP.
+- Khôi phục sau reboot ở mức best effort, tùy chính sách nền của từng hãng.
 
-### Thủ công (nếu muốn):
+## Cấu trúc repo
 
-```cmd
-:: Thêm vào startup
-reg add HKCU\Software\Microsoft\Windows\CurrentVersion\Run ^
-  /v AutoConnectINET /t REG_SZ /d "D:\auto-connect-inet\auto_connect_inet.exe" /f
-
-:: Chạy ngay
-start /B "" "D:\auto-connect-inet\auto_connect_inet.exe"
+```text
+.
+├── auto_connect_inet.py      # Ứng dụng Windows dạng Python
+├── auto_connect_inet.exe     # Bản Windows đã đóng gói
+├── install.bat               # Đăng ký startup và chạy bản Windows
+├── test_download.py          # Tiện ích đo tải xuống
+├── test_stability.py         # Tiện ích đo loss, latency và jitter
+└── mobile/                   # Ứng dụng Flutter/Kotlin cho Android
 ```
 
-## 🗑️ Gỡ cài đặt
+## Windows
 
-```cmd
-reg delete HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v AutoConnectINET /f
+### Cài bản đóng gói
+
+Đặt `install.bat` và `auto_connect_inet.exe` cùng thư mục, sau đó chạy:
+
+```bat
+install.bat
+```
+
+Script đăng ký executable vào `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, dừng instance cũ và chạy lại trong nền.
+
+### Chạy từ mã nguồn
+
+Project chỉ dùng Python standard library:
+
+```powershell
+python .\auto_connect_inet.py
+```
+
+Dữ liệu runtime được tạo cạnh executable/script và đã được Git bỏ qua:
+
+- `.creds_cache.json`: credential cache; không chia sẻ file này.
+- `auto_connect_inet.log`: log chẩn đoán.
+
+### Gỡ startup
+
+```bat
+reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v AutoConnectINET /f
 taskkill /f /im auto_connect_inet.exe
-rd /s /q D:\auto-connect-inet
-```
-
-## 🔬 Cơ chế kỹ thuật qua các phiên bản
-
-### 1. Phiên bản gốc (V1.0 - Single Interface Setup)
-* **Check Internet:** Thực hiện request HTTP GET tuần tự đến `neverssl.com` trong vòng lặp chính.
-* **Thời gian Re-auth:** Khá chậm (~5-10s) do bị block đồng bộ trong luồng chính và phải đợi cloud API phản hồi mỗi lần.
-* **Điểm yếu:** Chỉ theo dõi card mạng đang chạy, nếu card WiFi bị rớt kết nối vật lý thì script hoàn toàn mất tác dụng.
-
-### 2. Phiên bản cải tiến (V2.0 - Keepalive & Credentials Cache)
-* **Check Internet:** Sử dụng thread riêng để ping `detectportal.firefox.com` (timeout 0.5s) định kỳ mỗi 1s. Truyền tín hiệu re-auth thông qua `threading.Event`.
-* **Đăng nhập nhanh:** Sau lần đầu xác thực với cloud API thành công, credentials được lưu vào `.creds_cache.json` để tự động POST thẳng vào gateway cục bộ ở lần tiếp theo, giảm thiểu thời gian re-auth xuống còn **~1-2s**.
-* **Hạn chế:** Bị lỗi báo ONLINE giả nếu bật VPN/Tailscale Exit Node (gói check WAN ping bị định tuyến xuyên qua VPN) hoặc lỗi xung đột định tuyến (Metric) khi cắm 2 card mạng song song.
-
-### 3. Phiên bản Gaming Mode (V3.2 - Precise local checks & Spam auth)
-* **Check Internet (Precise local checks):** Loại bỏ ping WAN, chuyển sang check trực tiếp cổng chào cục bộ (`192.168.200.1`). Nhận diện chính xác trạng thái online/offline bằng cách so khớp tên miền thành công (`inetcenter.vn`) và form nhập `/login` (tránh bypass của VPN/Tailscale).
-* **Gaming Keepalive (500ms):** Tần suất check tăng lên mỗi 0.5s, timeout 300ms.
-* **Spam Auth:** Khi mất mạng, spam POST credentials liên tiếp 3 lần cách nhau 100ms để ép gateway xử lý.
-* **Zero Backoff:** Bỏ hoàn toàn án phạt chờ đợi re-auth (exponential backoff) để đảm bảo re-auth liên tục mỗi 1 giây cho đến khi mạng hồi phục. Thời gian re-auth giảm xuống còn **~0.3s**.
-
-### 4. Phiên bản hiện tại (V3.2 - Precise Gaming Mode Restored)
-* **Check Internet (Precise local checks):** Loại bỏ hoàn toàn ping WAN, chuyển sang check trực tiếp cổng chào cục bộ (`192.168.200.1`). Nhận diện chính xác trạng thái online/offline bằng cách so khớp tên miền thành công (`inetcenter.vn`) và form nhập `/login` (tránh bypass của VPN/Tailscale).
-* **Gaming Keepalive (500ms):** Tần suất check tăng lên mỗi 0.5s, timeout 300ms.
-* **Spam Auth:** Khi mất mạng, spam POST credentials liên tiếp 3 lần cách nhau 100ms để ép gateway xử lý.
-* **Zero Backoff:** Bỏ hoàn toàn án phạt chờ đợi re-auth (exponential backoff) để đảm bảo re-auth liên tục mỗi 1 giây cho đến khi mạng hồi phục. Thời gian re-auth giảm xuống còn **~0.3s**.
-
-```
-keepalive thread (0.5s)          main loop
-      │                            │
-      ├─ Local gateway check ─────┤ (chờ event)
-      │  (/status & /login)        │
-      │                            │
-      ├─ [MẤT MẠNG / BLOCKED] ────► event!
-      │                            ├─ cached creds? → POST gateway (~0.3s) ✅
-      │                            │                 (Spam 3 lần để ép auth)
-      │                            ├─ không?         → cloud API (~1-3s)
-      │                            └─ online lại (Bỏ backoff, retry 1s)
-```
-
-### So sánh hiệu năng re-auth qua các phiên bản
-
-```
-Gốc (v1.0) ████████████████████████████████████████  20-30s
-V2.0       ██████████████                             5-10s
-V3.2 này   █                                          ~0.3s (Gaming Mode) 🏁
 ```
 
 ## Android
 
-Bản Flutter cho Android nằm trong [`mobile/`](mobile/README.md). Ứng dụng dùng Kotlin Foreground Service để tự đăng nhập `INET - Free WiFi` khi chạy nền, không dùng proxy, VPN hoặc root.
+Flutter project nằm trong `mobile`, vì vậy mọi lệnh Flutter phải chạy từ thư mục đó:
 
-Build nhanh:
+```powershell
+cd mobile
+flutter pub get
+flutter analyze
+flutter test
+flutter run
+```
 
-```bash
+Build APK release tách theo CPU để giảm dung lượng:
+
+```powershell
+flutter build apk --release --split-per-abi
+```
+
+Với phần lớn điện thoại hiện nay, dùng:
+
+```text
+mobile/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+```
+
+Hướng dẫn quyền Android, cài APK, trạng thái daemon và xử lý sự cố nằm tại [`mobile/README.md`](mobile/README.md).
+
+## Kiểm thử
+
+```powershell
 cd mobile
 flutter analyze
 flutter test
-flutter build apk --debug
+.\android\gradlew.bat -p android testDebugUnitTest
 ```
 
-## 📦 Links
+## Bảo mật và giới hạn
+
+- Captive portal hiện vẫn dùng HTTP cleartext ở một phần luồng gateway/AWING; bên kiểm soát mạng có thể quan sát hoặc sửa lưu lượng này.
+- Không commit credential cache, log, keystore hoặc mật khẩu ký APK.
+- Android service, receiver và bridge không cung cấp API điều khiển công khai cho ứng dụng khác.
+- Portal thay đổi schema hoặc chính sách có thể yêu cầu cập nhật parser/authenticator.
+
+## Repository
 
 - GitHub: https://github.com/pckienuit/auto-connect-inet

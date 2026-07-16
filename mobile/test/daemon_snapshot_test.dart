@@ -4,10 +4,18 @@ import 'package:inet_auto_login/src/models/daemon_snapshot.dart';
 void main() {
   test('parses the complete native schema', () {
     final snapshot = DaemonSnapshot.fromMap({
-      'serviceEnabled': true, 'state': 'ONLINE', 'stateMessage': 'ok',
-      'ssid': 'INET - Free WiFi', 'gatewayIp': '192.0.2.1', 'localIp': '192.0.2.2',
-      'isWifiTarget': true, 'lastCheckAt': 1000, 'lastAuthAt': 2000,
-      'retryAt': 3000, 'failureCount': 2, 'lastError': 'safe error',
+      'serviceEnabled': true,
+      'state': 'ONLINE',
+      'stateMessage': 'ok',
+      'ssid': 'INET - Free WiFi',
+      'gatewayIp': '192.0.2.1',
+      'localIp': '192.0.2.2',
+      'isWifiTarget': true,
+      'lastCheckAt': 1000,
+      'lastAuthAt': 2000,
+      'retryAt': 3000,
+      'failureCount': 2,
+      'lastError': 'safe error',
     });
     expect(snapshot.state, DaemonState.online);
     expect(snapshot.gatewayIp, '192.0.2.1');
