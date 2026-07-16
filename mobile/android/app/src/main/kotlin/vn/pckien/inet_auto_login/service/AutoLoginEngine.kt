@@ -21,6 +21,7 @@ class AutoLoginEngine(
     private val clock: EpochClock = EpochClock { System.currentTimeMillis() },
     private val onlineIntervalMs: Long = 10_000,
     private val backoffPolicy: BackoffPolicy = BackoffPolicy(),
+    private val log: (String) -> Unit = {},
 ) {
     private val scope = CoroutineScope(SupervisorJob() + dispatcher)
     private val mutex = Mutex()
@@ -40,6 +41,7 @@ class AutoLoginEngine(
     private suspend fun onNetwork(context: NetworkContext?) {
         mutex.withLock {
             if (!enabled) return
+            log(context?.let { "Network generation=${it.generation} target=true" } ?: "Target network unavailable")
             scheduled?.cancel()
             scheduled = null
             if (context == null) {
@@ -72,11 +74,13 @@ class AutoLoginEngine(
             attempt = null
             if (!enabled || networks.current()?.generation != context.generation || result.outcome == AuthOutcome.STALE_NETWORK) return
             if (result.outcome == AuthOutcome.ONLINE) {
+                log("Authentication outcome=ONLINE phase=${result.phase}")
                 mutableSnapshot.value = mutableSnapshot.value.copy(state = DaemonState.ONLINE, stateMessage = result.message, failureCount = 0, lastAuthAt = if (result.phase == AuthPhase.STATUS) mutableSnapshot.value.lastAuthAt else clock.now(), retryAt = null, lastError = null)
                 scheduleLocked(context, onlineIntervalMs)
             } else {
                 val failures = mutableSnapshot.value.failureCount + 1
                 val delayMs = backoffPolicy.delayFor(failures)
+                log("Authentication outcome=${result.outcome} phase=${result.phase} retryDelayMs=$delayMs")
                 mutableSnapshot.value = mutableSnapshot.value.copy(state = DaemonState.BACKOFF, stateMessage = result.message, failureCount = failures, retryAt = clock.now() + delayMs, lastError = result.message)
                 scheduleLocked(context, delayMs)
             }

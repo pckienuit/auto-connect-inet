@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">INET Auto Login</string>
+    <string name="notification_channel_name">INET auto login</string>
+    <string name="notification_channel_description">Keeps captive portal authentication active</string>
+</resources>
