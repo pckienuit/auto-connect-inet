@@ -97,6 +97,19 @@ V2.0       ██████████████                           
 V3.2 này   █                                          ~0.3s (Gaming Mode) 🏁
 ```
 
+## Android
+
+Bản Flutter cho Android nằm trong [`mobile/`](mobile/README.md). Ứng dụng dùng Kotlin Foreground Service để tự đăng nhập `INET - Free WiFi` khi chạy nền, không dùng proxy, VPN hoặc root.
+
+Build nhanh:
+
+```bash
+cd mobile
+flutter analyze
+flutter test
+flutter build apk --debug
+```
+
 ## 📦 Links
 
 - GitHub: https://github.com/pckienuit/auto-connect-inet

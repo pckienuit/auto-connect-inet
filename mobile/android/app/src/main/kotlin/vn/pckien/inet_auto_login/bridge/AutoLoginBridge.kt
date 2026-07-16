@@ -20,8 +20,10 @@ class AutoLoginBridge(private val activity: Activity) : MethodChannel.MethodCall
     companion object {
         const val METHOD_CHANNEL = "vn.pckien.inet_auto_login/control"
         const val EVENT_CHANNEL = "vn.pckien.inet_auto_login/events"
+        private const val PERMISSION_REQUEST_CODE = 4201
     }
     private var eventJob: Job? = null
+    private var permissionResult: MethodChannel.Result? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val logger by lazy { RotatingLogger(activity.filesDir.resolve("logs")) }
 
@@ -33,6 +35,7 @@ class AutoLoginBridge(private val activity: Activity) : MethodChannel.MethodCall
                     if (missing.isNotEmpty()) result.error("PERMISSION_REQUIRED", "Required Android permissions have not been granted", mapOf("permissions" to missing))
                     else { ServiceController.start(activity); result.success(null) }
                 }
+                "requestPermissions" -> requestPermissions(result)
                 "stop" -> { ServiceController.stop(activity); result.success(null) }
                 "retryNow" -> { ServiceController.retry(activity); result.success(null) }
                 "getSnapshot" -> {
@@ -66,7 +69,35 @@ class AutoLoginBridge(private val activity: Activity) : MethodChannel.MethodCall
         eventJob = scope.launch { ServiceController.snapshots.collectLatest { events.success(it.toMap()) } }
     }
     override fun onCancel(arguments: Any?) { eventJob?.cancel(); eventJob = null }
-    fun dispose() { eventJob?.cancel(); scope.cancel() }
+    fun dispose() {
+        eventJob?.cancel()
+        permissionResult?.error("INTERNAL_ERROR", "Activity closed", null)
+        permissionResult = null
+        scope.cancel()
+    }
+
+    fun onRequestPermissionsResult(requestCode: Int): Boolean {
+        if (requestCode != PERMISSION_REQUEST_CODE) return false
+        val pending = permissionResult ?: return true
+        permissionResult = null
+        val missing = missingPermissions()
+        pending.success(mapOf("granted" to missing.isEmpty(), "missing" to missing))
+        return true
+    }
+
+    private fun requestPermissions(result: MethodChannel.Result) {
+        val missing = missingPermissions()
+        if (missing.isEmpty()) {
+            result.success(mapOf("granted" to true, "missing" to emptyList<String>()))
+            return
+        }
+        if (permissionResult != null) {
+            result.error("INTERNAL_ERROR", "A permission request is already active", null)
+            return
+        }
+        permissionResult = result
+        activity.requestPermissions(missing.toTypedArray(), PERMISSION_REQUEST_CODE)
+    }
 
     private fun missingPermissions(): List<String> = buildList {
         if (Build.VERSION.SDK_INT >= 33) {
@@ -75,4 +106,5 @@ class AutoLoginBridge(private val activity: Activity) : MethodChannel.MethodCall
         } else if (!granted(Manifest.permission.ACCESS_FINE_LOCATION)) add(Manifest.permission.ACCESS_FINE_LOCATION)
     }
     private fun granted(permission: String) = activity.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
+
 }

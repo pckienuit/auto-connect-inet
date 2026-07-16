@@ -22,4 +22,9 @@ class MainActivity : FlutterActivity() {
         bridge?.dispose(); bridge = null
         super.cleanUpFlutterEngine(flutterEngine)
     }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        if (bridge?.onRequestPermissionsResult(requestCode) == true) return
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+    }
 }
