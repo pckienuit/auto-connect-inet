@@ -1,0 +1,55 @@
+name: Android release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        working-directory: mobile
+        run: flutter pub get
+
+      - name: Analyze
+        working-directory: mobile
+        run: flutter analyze
+
+      - name: Test
+        working-directory: mobile
+        run: flutter test
+
+      - name: Build split APKs
+        working-directory: mobile
+        run: flutter build apk --release --split-per-abi
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            mobile/build/app/outputs/flutter-apk/app-*-release.apk \
+            --prerelease \
+            --title "INET Auto Login $GITHUB_REF_NAME (Internal test)" \
+            --notes "Bản thử nghiệm Android. Chọn app-arm64-v8a-release.apk cho hầu hết điện thoại hiện nay. APK đang được ký bằng debug key, chỉ dùng để cài thử nội bộ."
